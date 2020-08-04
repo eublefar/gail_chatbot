@@ -16,6 +16,7 @@ requirements = [
     "tensorboardX==2.0",
     "parlai==0.1.20200716",
     "numpy==1.18.5",
+    "git+https://github.com/eublefar/gym-loop.git",
 ]
 
 setup_requirements = []
