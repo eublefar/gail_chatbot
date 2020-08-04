@@ -27,7 +27,7 @@ class BertAdversarial(torch.nn.Module):
         clip_grad_norm_(self.model.parameters(), 0.5)
         self.optimizer.step()
 
-        return logits, hidden_states[-1]
+        return logits, hidden_states[-1], loss
 
     def get_device(self) -> Union[int, str]:
         _, p = next(self.model.named_parameters())

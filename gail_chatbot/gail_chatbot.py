@@ -29,11 +29,6 @@ except ModuleNotFoundError:
 
 torch.set_num_threads(8)
 
-# TODO:
-# - add reward passing from adversarial network to generator network
-# - add adv network training
-# - Log everything in tensorboardX
-
 
 class GailChatbot(Agent):
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
@@ -50,6 +45,10 @@ class GailChatbot(Agent):
         self.generator = None
         self.adversarial = None
         self.batch_size = opt["batchsize"]
+
+        # Hyperparameters
+        self.similarity_coef = 0.3
+        self.episode_num_log = 1
 
         if opt["task"] != "convai2":
             raise ValueError("Only works on convai task")
@@ -73,6 +72,8 @@ class GailChatbot(Agent):
             with open(os.path.join(path, "parameters.yml")) as param_file:
                 overwrite_params = yaml.load(param_file.read())
         else:
+            with open(os.path.join(path, "parameters.yml"), "w") as param_file:
+                param_file.write(yaml.dump(PPO.get_default_parameters()))
             overwrite_params = {}
         self._construct_generator(overwrite_params, path)
         self.adversarial = BertAdversarial()
@@ -198,7 +199,7 @@ class GailChatbot(Agent):
             )
         )
 
-        logits, hidden_states = self.adversarial.fit_batch(X, y)
+        logits, hidden_states, adv_loss = self.adversarial.fit_batch(X, y)
 
         positive_ids = torch.arange(0, len(dialogs_pos)) + len(dialogs_neg)
         generated_ids = positive_ids + len(generated_dialogs)
@@ -212,10 +213,7 @@ class GailChatbot(Agent):
         )
 
         reward_scores = (
-            (
-                adequacy_scores
-                + next_sentence_similarity_scores * next_sentence_similarity_scores
-            )
+            (adequacy_scores + self.similarity_coef * next_sentence_similarity_scores)
             .detach()
             .numpy()
         )
@@ -227,14 +225,29 @@ class GailChatbot(Agent):
 
         self.generator.update(self.gen_episode_num)
 
-        metrics = self.generator.metrics(
-            self.train_step if not is_eval else self.eval_step
-        )
-
-        for key, v in metrics.items():
-            self.writer.add_scalar(
-                key, v, global_step=self.train_step if not is_eval else self.eval_step
+        if self.train_step % self.episode_num_log == 0 and self.train_step:
+            metrics = self.generator.metrics(
+                self.train_step if not is_eval else self.eval_step
             )
+            metrics.update(
+                {
+                    "mean_positive_logits": torch.softmax(logits, dim=-1)[
+                        positive_ids
+                    ].mean(),
+                    "mean_generated_logits": torch.softmax(logits, dim=-1)[
+                        generated_ids
+                    ].mean(),
+                    "next_sentence_similarity_scores": next_sentence_similarity_scores.mean(),
+                    "adv_loss": adv_loss,
+                }
+            )
+
+            for key, v in metrics.items():
+                self.writer.add_scalar(
+                    key,
+                    v,
+                    global_step=self.train_step if not is_eval else self.eval_step,
+                )
 
         return [{"id": self.id} for observation in observations]
 

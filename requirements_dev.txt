@@ -1,5 +1,8 @@
 pip==19.2.3
 transformers==3.0.2
+tensorboardX==2.0
+parlai==0.1.20200716
+numpy==1.18.5
 bump2version==0.5.11
 wheel==0.33.6
 watchdog==0.9.0
