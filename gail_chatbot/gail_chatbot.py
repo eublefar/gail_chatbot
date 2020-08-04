@@ -50,9 +50,10 @@ class GailChatbot(Agent):
         # Hyperparameters
         self.similarity_coef = 0.3
         self.episode_num_log = 1
-        self.episode_num_dialog_dump = 1000
+        self.episode_num_dialog_dump = 1
         self.dialog_dump_path = opt["model_file"] + "_dialogs"
-        os.mkdir(self.dialog_dump_path)
+        if not os.path.isdir(self.dialog_dump_path):
+            os.mkdir(self.dialog_dump_path)
 
         if opt["task"] != "convai2":
             raise ValueError("Only works on convai task")
@@ -186,7 +187,9 @@ class GailChatbot(Agent):
             for persona, history, generated in generated_dialogs:
                 reply_str = self.generator_policy.tokenizer.convert_tokens_to_string(
                     generated
-                )
+                ).replace(self.generator_policy.tokenizer.eos_token, "")
+                if reply_str == "":
+                    reply_str = "__SILENCE__"
                 generated_dialogs_converted.append((persona, history + [reply_str]))
 
             generated_dialogs = generated_dialogs_converted
@@ -257,7 +260,8 @@ class GailChatbot(Agent):
             with open(
                 os.path.join(
                     self.dialog_dump_path, "dialogs{}.json".format(self.train_step)
-                )
+                ),
+                "w",
             ) as dialog_file:
                 json.dump(generated_dialogs, dialog_file)
 
