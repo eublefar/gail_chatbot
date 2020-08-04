@@ -16,6 +16,7 @@ from .bert_adversarial import BertAdversarial
 from gym_loop.agents.pytorch_ppo import PPO
 from tensorboardX import SummaryWriter
 import yaml
+import json
 
 
 try:
@@ -49,6 +50,9 @@ class GailChatbot(Agent):
         # Hyperparameters
         self.similarity_coef = 0.3
         self.episode_num_log = 1
+        self.episode_num_dialog_dump = 1000
+        self.dialog_dump_path = opt["model_file"] + "_dialogs"
+        os.mkdir(self.dialog_dump_path)
 
         if opt["task"] != "convai2":
             raise ValueError("Only works on convai task")
@@ -248,6 +252,14 @@ class GailChatbot(Agent):
                     v,
                     global_step=self.train_step if not is_eval else self.eval_step,
                 )
+
+        if self.train_step % self.episode_num_dialog_dump == 0 and self.train_step != 0:
+            with open(
+                os.path.join(
+                    self.dialog_dump_path, "dialogs{}.json".format(self.train_step)
+                )
+            ) as dialog_file:
+                json.dump(generated_dialogs, dialog_file)
 
         return [{"id": self.id} for observation in observations]
 
