@@ -8,33 +8,31 @@ from itertools import chain
 
 
 class BertAdversarial(torch.nn.Module):
-    def __init__(self, lr=1e-3):
+    def __init__(self, lr=1e-4):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("albert-large-v1")
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            "albert-large-v1"
+            "bert-base-uncased"
         )
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
 
     def fit_batch(
-        self, dialogs: List[Tuple[str, List[str]]], labels: List[int]
+        self, dialogs: List[Tuple[str, List[str]]], labels: List[int], sub_batch: int = 8
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         labels = torch.LongTensor(labels).to(self.get_device())
-        loss, logits, hidden_states = self(dialogs, labels)
+        loss, logits, hidden_states = self(dialogs, labels, sub_batch)
 
-        self.optimizer.zero_grad()
-        loss.backward()
-        clip_grad_norm_(self.model.parameters(), 0.5)
+#         clip_grad_norm_(self.model.parameters(), 20)
         self.optimizer.step()
-
-        return logits, hidden_states[-1], loss
+        self.optimizer.zero_grad()
+        return logits, hidden_states, torch.stack(loss).mean()
 
     def get_device(self) -> Union[int, str]:
         _, p = next(self.model.named_parameters())
         return p.device
 
     def forward(
-        self, dialogs: List[Tuple[str, List[str]]], labels: torch.LongTensor
+        self, dialogs: List[Tuple[str, List[str]]], labels: torch.LongTensor, sub_batch: int = 8
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         preprocessed_dialogs = [
             self._build_inputs_dialogs(persona, history) for persona, history in dialogs
@@ -42,15 +40,26 @@ class BertAdversarial(torch.nn.Module):
         token_ids, token_type_ids, attention_mask = self._prepare_tensors(
             preprocessed_dialogs
         )
-
-        outp = self.model(
-            input_ids=token_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            labels=labels,
-            output_hidden_states=True,
+        loss, logits, hidden_states = [], [], []
+        for i in range(token_ids.shape[0]//sub_batch):
+            lower = i*sub_batch
+            upper = (i + 1)*sub_batch
+            outp = self.model(
+                input_ids=token_ids[lower:upper],
+                attention_mask=attention_mask[lower:upper],
+                token_type_ids=token_type_ids[lower:upper],
+                labels=labels[lower:upper],
+                output_hidden_states=True,
+            )
+            outp[0].backward()
+            loss.append(outp[0])
+            logits.append(outp[1])
+            hidden_states.append(outp[2][-1])
+        return (
+            loss,
+            torch.cat(logits, dim=0),
+            torch.cat(hidden_states, dim=0)
         )
-        return outp
 
     def _build_inputs_dialogs(self, persona, history):
         persona = self.tokenizer.tokenize(persona)

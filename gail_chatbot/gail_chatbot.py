@@ -34,7 +34,8 @@ torch.set_num_threads(8)
 class GailChatbot(Agent):
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
         self.id = "GailChatbot"
-        self.MODEL_SUBPATHS = {"generator": "generator", "adversarial": "adversarial"}
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.MODEL_SUBPATHS = {"generator": "generator", "adversarial": "adversarial.bin"}
         self.eval_step = 0
         self.train_step = 0
         self.gen_episode_num = 0
@@ -48,10 +49,12 @@ class GailChatbot(Agent):
         self.batch_size = opt["batchsize"]
 
         # Hyperparameters
-        self.similarity_coef = 0.3
+        self.similarity_coef = 0
         self.episode_num_log = 1
-        self.episode_num_dialog_dump = 1
+        self.episode_num_dialog_dump = 300
+        self.episode_checkpoint_num = 300
         self.dialog_dump_path = opt["model_file"] + "_dialogs"
+        self.checkpoint_path = os.path.split(opt["model_file"])[0] 
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
 
@@ -63,6 +66,7 @@ class GailChatbot(Agent):
         else:
             self._create_from_path(opt["model_file"])
             if APEX_AVAILABLE:
+                pass
                 self.init_apex()
 
     def _create_from_shared(self, shared: Dict[str, Any]):
@@ -81,7 +85,7 @@ class GailChatbot(Agent):
                 param_file.write(yaml.dump(PPO.get_default_parameters()))
             overwrite_params = {}
         self._construct_generator(overwrite_params, path)
-        self.adversarial = BertAdversarial()
+        self._construct_adversarial(path)
         self.writer = SummaryWriter(os.path.join(path, filename) + ".tensorboard")
 
     def _construct_generator(self, overwrite_params: Dict[str, Any], path: str):
@@ -98,12 +102,34 @@ class GailChatbot(Agent):
         else:
             os.mkdir(gen_dir)
             self.generator_policy.save(gen_dir)
-
+        if torch.cuda.device_count() > 1:
+            self.adversarial.cuda(0)
+        else:
+            self.generator_policy.to(self.device)
+    
+    def _construct_adversarial(self, path):
+        self.adversarial = BertAdversarial()
+        
+        adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial"])
+        if os.path.isfile(adv_dir):
+            self.adversarial.load_state_dict(torch.load(adv_dir))
+        else:
+            torch.save(self.adversarial.state_dict(), adv_dir)
+        if torch.cuda.device_count() > 1:
+            self.adversarial.cuda(1)
+        else:
+            self.adversarial.to(self.device)
+        
     def init_apex(self):
-        self.generator.policy, self.generator.optimizer = amp.initialize(
-            self.generator.policy, self.generator.optimizer
+        ([self.generator.policy, self.adversarial],
+        [self.generator.optimizer, self.adversarial.optimizer]) = amp.initialize(
+            [self.generator.policy, self.adversarial],
+            [self.generator.optimizer, self.adversarial.optimizer],
+            opt_level="O2"
         )
-
+        self.generator_policy = self.generator.policy
+        self.adversarial.optimizer.zero_grad()
+        
     def share(self) -> Dict[str, Any]:
         return dict(
             **super().share(),
@@ -197,17 +223,20 @@ class GailChatbot(Agent):
             print(generated)
             raise ke
 
-        X = [*dialogs_neg, *dialogs_pos, *generated_dialogs]
+        X = [*dialogs_neg, *dialogs_pos,
+            *generated_dialogs
+            ]
+#         print('pos:   ', dialogs_pos[-1])
+#         print('neg:   ', dialogs_neg[-1])
         y = torch.cat(
             (
                 torch.zeros(size=(len(dialogs_neg),), dtype=torch.long),
                 torch.ones(size=(len(dialogs_pos),), dtype=torch.long),
-                torch.zeros(size=(len(generated_dialogs),), dtype=torch.long),
+               torch.zeros(size=(len(generated_dialogs),), dtype=torch.long),
             )
         )
 
         logits, hidden_states, adv_loss = self.adversarial.fit_batch(X, y)
-
         positive_ids = torch.arange(0, len(dialogs_pos)) + len(dialogs_neg)
         generated_ids = positive_ids + len(generated_dialogs)
         positive_embs = hidden_states[positive_ids, 0, :]
@@ -221,6 +250,7 @@ class GailChatbot(Agent):
 
         reward_scores = (
             (adequacy_scores + self.similarity_coef * next_sentence_similarity_scores)
+            .cpu()
             .detach()
             .numpy()
         )
@@ -239,13 +269,14 @@ class GailChatbot(Agent):
             metrics.update(
                 {
                     "mean_positive_logits": torch.softmax(logits, dim=-1)[
-                        positive_ids
+                        positive_ids, 1
                     ].mean(),
                     "mean_generated_logits": torch.softmax(logits, dim=-1)[
-                        generated_ids
+                        generated_ids, 1
                     ].mean(),
                     "next_sentence_similarity_scores": next_sentence_similarity_scores.mean(),
                     "adv_loss": adv_loss,
+                    "l1_loss": torch.nn.functional.l1_loss(y.cpu(), logits[:,1].cpu())
                 }
             )
 
@@ -257,6 +288,10 @@ class GailChatbot(Agent):
                 )
 
         if self.train_step % self.episode_num_dialog_dump == 0 and self.train_step != 0:
+            gen_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["generator"])
+            self.generator_policy.save(gen_p)
+            adv_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["adversarial"])
+            torch.save(self.adversarial.state_dict(), adv_p)
             with open(
                 os.path.join(
                     self.dialog_dump_path, "dialogs{}.json".format(self.train_step)
