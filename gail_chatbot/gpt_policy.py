@@ -40,7 +40,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         past_key_values = self.cache.pop(cache_str, None)
         outp = self([state], past_key_values)
         try:
-            action = torch.distributions.Categorical(outp["action_distribution"].cpu()).sample()
+            action = torch.distributions.Categorical(
+                outp["action_distribution"].cpu()
+            ).sample()
         except RuntimeError:
             print(outp["action_distribution"])
             print(torch.isnan(outp["action_distribution"]).any())
@@ -48,6 +50,27 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         new_cache_str = state[0] + "\n".join(state[1]) + " ".join(state[2])
         self.cache[new_cache_str] = outp["past_key_values"]
+        return outp
+
+    def batch_act(self, state_batch):
+        if isinstance(self.cache, dict):
+            past_key_values = None
+        else:
+            past_key_values = self.cache
+            print(len(past_key_values), past_key_values[0].shape)
+
+        outp = self(state_batch, past_key_values)
+
+        try:
+            action = torch.distributions.Categorical(
+                outp["action_distribution"].cpu()
+            ).sample()
+        except RuntimeError:
+            print(outp["action_distribution"])
+            print(torch.isnan(outp["action_distribution"]).any())
+        outp["actions"] = action.numpy()
+        del self.cache
+        self.cache = outp["past_key_values"]
         return outp
 
     def __call__(self, *args, **kwargs):
@@ -59,22 +82,17 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         past_key_values: List[torch.Tensor] = None,
     ):
         if past_key_values is not None:
-            # support caching for batch size of 1
-            if len(state_batch) > 1:
-                raise NotImplementedError(
-                    "past_key_values not supported for batches of size > 1"
-                )
-            state_batch[0] = list(state_batch[0])
-            state_batch[0][0] = ""
-            state_batch[0][1] = []
-            state_batch[0][2] = [state_batch[0][2][-1]]
+            state_batch = [("", [], [state[2][-1]]) for state in state_batch]
+
         input_ids, token_type_ids_batch, seqlen, attention_mask = self._build_inputs(
             state_batch
         )
-        
-        input_ids = torch.LongTensor(input_ids).to(self.get_device())
-        token_type_ids = torch.LongTensor(token_type_ids_batch).to(self.get_device())
-        attention_mask = torch.LongTensor(attention_mask).to(self.get_device())
+
+        input_ids = torch.LongTensor(input_ids, device=self.get_device())
+        token_type_ids = torch.LongTensor(
+            token_type_ids_batch, device=self.get_device()
+        )
+        attention_mask = torch.LongTensor(attention_mask, device=self.get_device())
 
         action_dist, cache, hidden_states = self.model(
             input_ids,
@@ -86,26 +104,25 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         last_layer_hidden_states = hidden_states[-1]
         last_action_ids = (
-            (torch.LongTensor(seqlen) - 1)
+            (torch.LongTensor(seqlen, device=self.get_device()) - 1)
             .unsqueeze(-1)
             .unsqueeze(-1)
             .expand([-1, -1, action_dist.shape[-1]])
-        ).to(self.get_device())
+        )
         action_dist = action_dist.gather(1, last_action_ids).squeeze(1)
 
         last_feature_ids = (
-            (torch.LongTensor(seqlen) - 1)
+            (torch.LongTensor(seqlen, device=self.get_device()) - 1)
             .unsqueeze(-1)
             .unsqueeze(-1)
             .expand([-1, -1, last_layer_hidden_states.shape[-1]])
-        ).to(self.get_device())
-        features = (
-            last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
         )
+        features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
         values = self.value_head(features)
 
         return {
-            "action_distribution": torch.nn.functional.softmax(action_dist, dim=-1) + 1e-8,
+            "action_distribution": torch.nn.functional.softmax(action_dist, dim=-1)
+            + 1e-8,
             "values": values.squeeze(-1),
             "past_key_values": cache,
         }
@@ -114,7 +131,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         token_type_batch = []
         input_words = []
         seqlen = []
-
         for state in state_batch:
             persona, history, utterance = state
             if persona:
@@ -122,7 +138,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                     self.tokenizer.eos_token
                 ]
             else:
-                persona_tokens=[]
+                persona_tokens = []
             input_tokens = []
             persona_types = [1] * len(persona_tokens)
             utterance_types = [1] * len(utterance)
@@ -164,7 +180,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         return input_ids, token_type_ids_batch, seqlen, attention_mask
 
-
     def reset_noise(self):
         pass
 
@@ -172,4 +187,3 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         del self.cache
         self.cache = {}
         gc.collect()
-        

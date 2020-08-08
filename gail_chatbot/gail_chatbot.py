@@ -35,7 +35,10 @@ class GailChatbot(Agent):
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
         self.id = "GailChatbot"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.MODEL_SUBPATHS = {"generator": "generator", "adversarial": "adversarial.bin"}
+        self.MODEL_SUBPATHS = {
+            "generator": "generator",
+            "adversarial": "adversarial.bin",
+        }
         self.eval_step = 0
         self.train_step = 0
         self.gen_episode_num = 0
@@ -47,6 +50,7 @@ class GailChatbot(Agent):
         self.generator = None
         self.adversarial = None
         self.batch_size = opt["batchsize"]
+        self.sub_batch_size = 16
 
         # Hyperparameters
         self.similarity_coef = 0
@@ -54,7 +58,7 @@ class GailChatbot(Agent):
         self.episode_num_dialog_dump = 300
         self.episode_checkpoint_num = 300
         self.dialog_dump_path = opt["model_file"] + "_dialogs"
-        self.checkpoint_path = os.path.split(opt["model_file"])[0] 
+        self.checkpoint_path = os.path.split(opt["model_file"])[0]
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
 
@@ -92,6 +96,8 @@ class GailChatbot(Agent):
         params = PPO.get_default_parameters()
         params.update(overwrite_params)
         params.update({"n_envs": self.batch_size})
+        params.update({"batch_size": self.sub_batch_size})
+        
         self.generator_policy = GptPolicy()
         params["policy"] = self.generator_policy
         self.generator = PPO(**params)
@@ -106,10 +112,10 @@ class GailChatbot(Agent):
             self.adversarial.cuda(0)
         else:
             self.generator_policy.to(self.device)
-    
+
     def _construct_adversarial(self, path):
         self.adversarial = BertAdversarial()
-        
+
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial"])
         if os.path.isfile(adv_dir):
             self.adversarial.load_state_dict(torch.load(adv_dir))
@@ -119,17 +125,19 @@ class GailChatbot(Agent):
             self.adversarial.cuda(1)
         else:
             self.adversarial.to(self.device)
-        
+
     def init_apex(self):
-        ([self.generator.policy, self.adversarial],
-        [self.generator.optimizer, self.adversarial.optimizer]) = amp.initialize(
+        (
             [self.generator.policy, self.adversarial],
             [self.generator.optimizer, self.adversarial.optimizer],
-            opt_level="O2"
+        ) = amp.initialize(
+            [self.generator.policy, self.adversarial],
+            [self.generator.optimizer, self.adversarial.optimizer],
+            opt_level="O2",
         )
         self.generator_policy = self.generator.policy
         self.adversarial.optimizer.zero_grad()
-        
+
     def share(self) -> Dict[str, Any]:
         return dict(
             **super().share(),
@@ -201,12 +209,26 @@ class GailChatbot(Agent):
 
         #  Optimize generative model
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
+        gen_dialogs_batch = []
+        final_transition_batch = []
+        for i in range(
+            (self.batch_size // self.sub_batch_size)
+            + int(self.batch_size % self.sub_batch_size > 0)
+        ):
+            upper = (i + 1) * self.sub_batch_size
+            lower = i * self.sub_batch_size
+            (
+                generated_dialogs,
+                final_transitions,
+                self.gen_episode_num,
+            ) = self.generate_dialogs(
+                dialogs_to_generate[lower:upper], self.gen_episode_num
+            )
+            gen_dialogs_batch.extend(generated_dialogs)
+            final_transition_batch.extend(final_transitions)
 
-        (
-            generated_dialogs,
-            final_transitions,
-            self.gen_episode_num,
-        ) = self.generate_dialogs(dialogs_to_generate, self.gen_episode_num)
+        generated_dialogs = gen_dialogs_batch
+        final_transitions = final_transition_batch
 
         try:
             generated_dialogs_converted = []
@@ -223,16 +245,12 @@ class GailChatbot(Agent):
             print(generated)
             raise ke
 
-        X = [*dialogs_neg, *dialogs_pos,
-            *generated_dialogs
-            ]
-#         print('pos:   ', dialogs_pos[-1])
-#         print('neg:   ', dialogs_neg[-1])
+        X = [*dialogs_neg, *dialogs_pos, *generated_dialogs]
         y = torch.cat(
             (
                 torch.zeros(size=(len(dialogs_neg),), dtype=torch.long),
                 torch.ones(size=(len(dialogs_pos),), dtype=torch.long),
-               torch.zeros(size=(len(generated_dialogs),), dtype=torch.long),
+                torch.zeros(size=(len(generated_dialogs),), dtype=torch.long),
             )
         )
 
@@ -258,7 +276,7 @@ class GailChatbot(Agent):
         for i, final_transition in enumerate(final_transitions):
             if final_transition is not None:
                 final_transition[2] = reward_scores[i]
-                self.generator.memorize(*final_transition, env_id=i)
+        self.generator.batch_memorize(final_transitions)
 
         self.generator.update(self.gen_episode_num)
 
@@ -276,7 +294,7 @@ class GailChatbot(Agent):
                     ].mean(),
                     "next_sentence_similarity_scores": next_sentence_similarity_scores.mean(),
                     "adv_loss": adv_loss,
-                    "l1_loss": torch.nn.functional.l1_loss(y.cpu(), logits[:,1].cpu())
+                    "l1_loss": torch.nn.functional.l1_loss(y.cpu(), logits[:, 1].cpu()),
                 }
             )
 
@@ -290,7 +308,9 @@ class GailChatbot(Agent):
         if self.train_step % self.episode_num_dialog_dump == 0 and self.train_step != 0:
             gen_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["generator"])
             self.generator_policy.save(gen_p)
-            adv_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["adversarial"])
+            adv_p = os.path.join(
+                self.checkpoint_path, self.MODEL_SUBPATHS["adversarial"]
+            )
             torch.save(self.adversarial.state_dict(), adv_p)
             with open(
                 os.path.join(
@@ -328,46 +348,42 @@ class GailChatbot(Agent):
         self,
         dialogs: Iterable[Tuple[str, List[str]]],
         episode_num: int = 0,
-        max_len: int = 512,
+        max_len: int = 64,
     ):
         global_step = 0
-
         done = np.zeros([len(dialogs)], dtype=bool)
         dialogs = [(*dialog, []) for dialog in dialogs]
         prev_dialog = [(*dialog, []) for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
+        transitions = [None] * len(dialogs)
         for step in range(max_len):
             if done.all():
                 break
+            actions = self.generator.batch_act(dialogs, done)
+            words = self.generator_policy.tokenizer.convert_ids_to_tokens(actions)
             for i, dialog in enumerate(dialogs):
                 if done[i]:
                     continue
                 prev_dialog[i] = deepcopy(dialog)
-                action = self.generator.act(dialog, episode_num=episode_num, env_id=i)
-                word = self.generator_policy.tokenizer.convert_ids_to_tokens(action)[0]
-                dialog[2].append(word)
-                if word == self.generator_policy.tokenizer.eos_token:
+                dialog[2].append(words[i])
+                if words[i] == self.generator_policy.tokenizer.eos_token or (
+                    step == (max_len - 1)
+                ):
                     episode_num += 1
                     done[i] = True
                     final_transitions[i] = [
                         prev_dialog[i],
-                        action,
+                        actions[i],
                         0,
                         done[i],
                         dialog,
-                        global_step,
                     ]
                 else:
-                    self.generator.memorize(
-                        prev_dialog[i],
-                        action,
-                        0,
-                        done[i],
-                        dialog,
-                        global_step,
-                        env_id=i,
-                    )
-                global_step += 1
+                    transitions[i] = [prev_dialog[i], actions[i], 0, done[i], dialog]
+                    global_step += 1
+            if not all(final_transitions):
+                self.generator.batch_memorize(transitions)
+
         self.generator_policy.clear_cache()
         return dialogs, final_transitions, episode_num
 
