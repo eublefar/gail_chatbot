@@ -5,16 +5,18 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from itertools import chain
+from torch.cuda.amp import autocast, GradScaler
 
 
 class BertAdversarial(torch.nn.Module):
-    def __init__(self, lr=1e-4):
+    def __init__(self, lr=1e-4, mixed_precision=True):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = AutoTokenizer.from_pretrained("albert-base-v2")
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            "bert-base-uncased"
+            "albert-base-v2"
         )
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.scaler = GradScaler()
 
     def fit_batch(
         self, dialogs: List[Tuple[str, List[str]]], labels: List[int], sub_batch: int = 8
@@ -23,16 +25,17 @@ class BertAdversarial(torch.nn.Module):
         loss, logits, hidden_states = self(dialogs, labels, sub_batch)
 
 #         clip_grad_norm_(self.model.parameters(), 20)
-        self.optimizer.step()
+        self.scaler.step(self.optimizer)
+        self.scaler.update()
         self.optimizer.zero_grad()
-        return logits, hidden_states, torch.stack(loss).mean()
+        return logits, hidden_states, torch.stack(loss).mean() if loss is not None else None
 
     def get_device(self) -> Union[int, str]:
         _, p = next(self.model.named_parameters())
         return p.device
 
     def forward(
-        self, dialogs: List[Tuple[str, List[str]]], labels: torch.LongTensor, sub_batch: int = 8
+        self, dialogs: List[Tuple[str, List[str]]], labels: torch.LongTensor = None, sub_batch: int = 16
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         preprocessed_dialogs = [
             self._build_inputs_dialogs(persona, history) for persona, history in dialogs
@@ -44,17 +47,24 @@ class BertAdversarial(torch.nn.Module):
         for i in range(token_ids.shape[0]//sub_batch):
             lower = i*sub_batch
             upper = (i + 1)*sub_batch
-            outp = self.model(
-                input_ids=token_ids[lower:upper],
-                attention_mask=attention_mask[lower:upper],
-                token_type_ids=token_type_ids[lower:upper],
-                labels=labels[lower:upper],
-                output_hidden_states=True,
-            )
-            outp[0].backward()
-            loss.append(outp[0])
-            logits.append(outp[1])
-            hidden_states.append(outp[2][-1])
+            with autocast():
+                outp = self.model(
+                    input_ids=token_ids[lower:upper],
+                    attention_mask=attention_mask[lower:upper],
+                    token_type_ids=token_type_ids[lower:upper],
+                    labels=labels[lower:upper] if labels is not None else None,
+                    output_hidden_states=True,
+                )
+            if labels is not None:
+                
+                self.scaled.scale(outp[0]).backward()
+                loss.append(outp[0])
+                logits.append(outp[1])
+                hidden_states.append(outp[2][-1])
+            else:
+                logits.append(outp[0])
+                hidden_states.append(outp[1][-1])
+                
         return (
             loss,
             torch.cat(logits, dim=0),

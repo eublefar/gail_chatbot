@@ -50,10 +50,12 @@ class GailChatbot(Agent):
         self.generator = None
         self.adversarial = None
         self.batch_size = opt["batchsize"]
-        self.sub_batch_size = 16
+        self.sub_batch_size = 8
+        self.metrics = {}
+        self.is_eval = False
 
         # Hyperparameters
-        self.similarity_coef = 0
+        self.similarity_coef = 0.2
         self.episode_num_log = 1
         self.episode_num_dialog_dump = 300
         self.episode_checkpoint_num = 300
@@ -69,9 +71,8 @@ class GailChatbot(Agent):
             self._create_from_shared(shared)
         else:
             self._create_from_path(opt["model_file"])
-            if APEX_AVAILABLE:
-                pass
-                self.init_apex()
+        if APEX_AVAILABLE:
+            self.init_apex()
 
     def _create_from_shared(self, shared: Dict[str, Any]):
         self.generator = shared["generator"]
@@ -95,7 +96,7 @@ class GailChatbot(Agent):
     def _construct_generator(self, overwrite_params: Dict[str, Any], path: str):
         params = PPO.get_default_parameters()
         params.update(overwrite_params)
-        params.update({"n_envs": self.batch_size})
+        params.update({"n_envs": self.sub_batch_size})
         params.update({"batch_size": self.sub_batch_size})
         
         self.generator_policy = GptPolicy()
@@ -127,13 +128,14 @@ class GailChatbot(Agent):
             self.adversarial.to(self.device)
 
     def init_apex(self):
+        print(self.device)
         (
-            [self.generator.policy, self.adversarial],
-            [self.generator.optimizer, self.adversarial.optimizer],
+            self.generator.policy,
+            self.generator.optimizer,
         ) = amp.initialize(
-            [self.generator.policy, self.adversarial],
-            [self.generator.optimizer, self.adversarial.optimizer],
-            opt_level="O2",
+            self.generator.policy,
+            self.generator.optimizer,
+            opt_level="O1",
         )
         self.generator_policy = self.generator.policy
         self.adversarial.optimizer.zero_grad()
@@ -200,9 +202,9 @@ class GailChatbot(Agent):
         raise NotImplementedError()
 
     def batch_act(self, observations: List[Message]):
-        is_eval = any(["eval_labels" in observation for observation in observations])
+        self.is_eval = any(["eval_labels" in observation for observation in observations])
 
-        if is_eval:
+        if self.is_eval:
             self.eval_step += 1
         else:
             self.train_step += 1
@@ -210,7 +212,6 @@ class GailChatbot(Agent):
         #  Optimize generative model
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
         gen_dialogs_batch = []
-        final_transition_batch = []
         for i in range(
             (self.batch_size // self.sub_batch_size)
             + int(self.batch_size % self.sub_batch_size > 0)
@@ -224,104 +225,109 @@ class GailChatbot(Agent):
             ) = self.generate_dialogs(
                 dialogs_to_generate[lower:upper], self.gen_episode_num
             )
+            generated_dialogs = self.decode_reply(generated_dialogs)
             gen_dialogs_batch.extend(generated_dialogs)
-            final_transition_batch.extend(final_transitions)
-
-        generated_dialogs = gen_dialogs_batch
-        final_transitions = final_transition_batch
-
-        try:
-            generated_dialogs_converted = []
-            for persona, history, generated in generated_dialogs:
-                reply_str = self.generator_policy.tokenizer.convert_tokens_to_string(
-                    generated
-                ).replace(self.generator_policy.tokenizer.eos_token, "")
-                if reply_str == "":
-                    reply_str = "__SILENCE__"
-                generated_dialogs_converted.append((persona, history + [reply_str]))
-
-            generated_dialogs = generated_dialogs_converted
-        except KeyError as ke:
-            print(generated)
-            raise ke
-
-        X = [*dialogs_neg, *dialogs_pos, *generated_dialogs]
+            scores = self.compute_rewards(generated_dialogs, dialogs_pos[lower:upper])
+            for i, final_transition in enumerate(final_transitions):
+                if final_transition is not None:
+                    final_transition[2] = scores[i]
+            self.generator.batch_memorize(final_transitions)
+            
+        X = [*dialogs_neg, *dialogs_pos,
+             *gen_dialogs_batch
+            ]
         y = torch.cat(
             (
                 torch.zeros(size=(len(dialogs_neg),), dtype=torch.long),
                 torch.ones(size=(len(dialogs_pos),), dtype=torch.long),
-                torch.zeros(size=(len(generated_dialogs),), dtype=torch.long),
+                torch.zeros(size=(len(gen_dialogs_batch),), dtype=torch.long),
             )
         )
+        
+        logits, hidden_states, self.metrics["adv_loss"] = self.adversarial.fit_batch(X, y)
+        self.generator.update(self.gen_episode_num)
+        
+        probs = torch.softmax(logits, dim=-1)
+        
+        self.metrics["pos_logits"] = probs[len(dialogs_neg): len(dialogs_neg) + len(dialogs_pos), 1].mean()
+        self.metrics["gen_logits"] = probs[-len(gen_dialogs_batch):, 1].mean()
 
-        logits, hidden_states, adv_loss = self.adversarial.fit_batch(X, y)
-        positive_ids = torch.arange(0, len(dialogs_pos)) + len(dialogs_neg)
-        generated_ids = positive_ids + len(generated_dialogs)
-        positive_embs = hidden_states[positive_ids, 0, :]
-        generated_embs = hidden_states[generated_ids, 0, :]
+        if self.metrics["pos_logits"] < 0:
+            print(logits.shape)
+            print(logits)
+            raise RuntimeError()
+        
+        if self.train_step % self.episode_num_log == 0 and self.train_step:
+            self.write_metrics()
 
+        if self.train_step % self.episode_num_dialog_dump == 0 and self.train_step != 0:
+            self.checkpoint(
+                gen_dialogs_batch
+            )
+
+        return [{"id": self.id} for observation in observations]
+    
+    def decode_reply(self, generated_dialogs):
+        generated_dialogs_converted = []
+        for persona, history, generated in generated_dialogs:
+            reply_str = self.generator_policy.tokenizer.convert_tokens_to_string(
+                generated
+            ).replace(self.generator_policy.tokenizer.eos_token, "")
+            if reply_str == "":
+                reply_str = "__SILENCE__"
+            generated_dialogs_converted.append((persona, history + [reply_str]))
+        return generated_dialogs_converted
+
+    def compute_rewards(self, dialogs, dialogs_pos):
+        self.adversarial.eval()
+        _, logits, hidden_states = self.adversarial(dialogs, sub_batch=self.sub_batch_size)
+        _, _, hidden_states_pos = self.adversarial(dialogs_pos, sub_batch=self.sub_batch_size)
+        self.adversarial.train()
+        
         adequacy_scores = torch.softmax(logits, dim=-1)[:, 1]
-        adequacy_scores = adequacy_scores[generated_ids]
+        
+        positive_embs = hidden_states_pos[:, 0, :]
+        generated_embs = hidden_states[:, 0, :]
         next_sentence_similarity_scores = torch.nn.functional.cosine_similarity(
             positive_embs, generated_embs, dim=-1
         )
-
+        self.metrics['next_sentence_similarity_scores'] = next_sentence_similarity_scores.mean()
         reward_scores = (
             (adequacy_scores + self.similarity_coef * next_sentence_similarity_scores)
             .cpu()
             .detach()
             .numpy()
         )
-
-        for i, final_transition in enumerate(final_transitions):
-            if final_transition is not None:
-                final_transition[2] = reward_scores[i]
-        self.generator.batch_memorize(final_transitions)
-
-        self.generator.update(self.gen_episode_num)
-
-        if self.train_step % self.episode_num_log == 0 and self.train_step:
-            metrics = self.generator.metrics(
-                self.train_step if not is_eval else self.eval_step
+        return reward_scores
+    
+    def write_metrics(self):
+        metrics = self.generator.metrics(
+            self.train_step if not self.is_eval else self.eval_step
+        )
+        metrics.update(self.metrics)
+        self.metrics = {}
+        for key, v in metrics.items():
+            self.writer.add_scalar(
+                key,
+                v,
+                global_step=self.train_step if not self.is_eval else self.eval_step,
             )
-            metrics.update(
-                {
-                    "mean_positive_logits": torch.softmax(logits, dim=-1)[
-                        positive_ids, 1
-                    ].mean(),
-                    "mean_generated_logits": torch.softmax(logits, dim=-1)[
-                        generated_ids, 1
-                    ].mean(),
-                    "next_sentence_similarity_scores": next_sentence_similarity_scores.mean(),
-                    "adv_loss": adv_loss,
-                    "l1_loss": torch.nn.functional.l1_loss(y.cpu(), logits[:, 1].cpu()),
-                }
-            )
-
-            for key, v in metrics.items():
-                self.writer.add_scalar(
-                    key,
-                    v,
-                    global_step=self.train_step if not is_eval else self.eval_step,
-                )
-
-        if self.train_step % self.episode_num_dialog_dump == 0 and self.train_step != 0:
-            gen_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["generator"])
-            self.generator_policy.save(gen_p)
-            adv_p = os.path.join(
-                self.checkpoint_path, self.MODEL_SUBPATHS["adversarial"]
-            )
-            torch.save(self.adversarial.state_dict(), adv_p)
-            with open(
-                os.path.join(
-                    self.dialog_dump_path, "dialogs{}.json".format(self.train_step)
-                ),
-                "w",
-            ) as dialog_file:
-                json.dump(generated_dialogs, dialog_file)
-
-        return [{"id": self.id} for observation in observations]
-
+        
+    def checkpoint(self, dialogs):
+        gen_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["generator"])
+        self.generator_policy.save(gen_p)
+        adv_p = os.path.join(
+            self.checkpoint_path, self.MODEL_SUBPATHS["adversarial"]
+        )
+        torch.save(self.adversarial.state_dict(), adv_p)
+        with open(
+            os.path.join(
+                self.dialog_dump_path, "dialogs{}.json".format(self.train_step)
+            ),
+            "w"
+        ) as dialog_file:
+            json.dump(dialogs, dialog_file)
+    
     def flatten(
         self, observations: List[Message]
     ) -> Tuple[

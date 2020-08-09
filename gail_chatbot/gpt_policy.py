@@ -57,7 +57,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             past_key_values = None
         else:
             past_key_values = self.cache
-            print(len(past_key_values), past_key_values[0].shape)
 
         outp = self(state_batch, past_key_values)
 
@@ -88,11 +87,11 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             state_batch
         )
 
-        input_ids = torch.LongTensor(input_ids, device=self.get_device())
+        input_ids = torch.LongTensor(input_ids).to(self.get_device())
         token_type_ids = torch.LongTensor(
-            token_type_ids_batch, device=self.get_device()
-        )
-        attention_mask = torch.LongTensor(attention_mask, device=self.get_device())
+            token_type_ids_batch
+        ).to(self.get_device())
+        attention_mask = torch.LongTensor(attention_mask).to(self.get_device())
 
         action_dist, cache, hidden_states = self.model(
             input_ids,
@@ -104,19 +103,19 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         last_layer_hidden_states = hidden_states[-1]
         last_action_ids = (
-            (torch.LongTensor(seqlen, device=self.get_device()) - 1)
+            (torch.LongTensor(seqlen) - 1)
             .unsqueeze(-1)
             .unsqueeze(-1)
             .expand([-1, -1, action_dist.shape[-1]])
-        )
+        ).to(self.get_device())
         action_dist = action_dist.gather(1, last_action_ids).squeeze(1)
 
         last_feature_ids = (
-            (torch.LongTensor(seqlen, device=self.get_device()) - 1)
+            (torch.LongTensor(seqlen) - 1)
             .unsqueeze(-1)
             .unsqueeze(-1)
             .expand([-1, -1, last_layer_hidden_states.shape[-1]])
-        )
+        ).to(self.get_device())
         features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
         values = self.value_head(features)
 
