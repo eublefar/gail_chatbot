@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from transformers import AutoModelWithLMHead, AutoTokenizer
 from gym_loop.policies.base_policy import BasePolicy
+from torch.cuda.amp import autocast
 
 
 class GptPolicy(torch.nn.Module, BasePolicy):
@@ -92,14 +93,14 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             token_type_ids_batch
         ).to(self.get_device())
         attention_mask = torch.LongTensor(attention_mask).to(self.get_device())
-
-        action_dist, cache, hidden_states = self.model(
-            input_ids,
-            token_type_ids=token_type_ids,
-            attention_mask=attention_mask,
-            past=past_key_values,
-            output_hidden_states=True,
-        )
+        with autocast():
+            action_dist, cache, hidden_states = self.model(
+                input_ids,
+                token_type_ids=token_type_ids,
+                attention_mask=attention_mask,
+                past=past_key_values,
+                output_hidden_states=True,
+            )
 
         last_layer_hidden_states = hidden_states[-1]
         last_action_ids = (

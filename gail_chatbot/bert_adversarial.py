@@ -9,7 +9,7 @@ from torch.cuda.amp import autocast, GradScaler
 
 
 class BertAdversarial(torch.nn.Module):
-    def __init__(self, lr=1e-4, mixed_precision=True):
+    def __init__(self, lr=1e-5, mixed_precision=True):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("albert-base-v2")
         self.model = AutoModelForSequenceClassification.from_pretrained(
@@ -28,7 +28,7 @@ class BertAdversarial(torch.nn.Module):
         self.scaler.step(self.optimizer)
         self.scaler.update()
         self.optimizer.zero_grad()
-        return logits, hidden_states, torch.stack(loss).mean() if loss is not None else None
+        return logits, hidden_states, loss
 
     def get_device(self) -> Union[int, str]:
         _, p = next(self.model.named_parameters())
@@ -44,7 +44,7 @@ class BertAdversarial(torch.nn.Module):
             preprocessed_dialogs
         )
         loss, logits, hidden_states = [], [], []
-        for i in range(token_ids.shape[0]//sub_batch):
+        for i in range(token_ids.shape[0]//sub_batch + int(token_ids.shape[0] % sub_batch != 0)):
             lower = i*sub_batch
             upper = (i + 1)*sub_batch
             with autocast():
@@ -57,7 +57,7 @@ class BertAdversarial(torch.nn.Module):
                 )
             if labels is not None:
                 
-                self.scaled.scale(outp[0]).backward()
+                self.scaler.scale(outp[0]).backward()
                 loss.append(outp[0])
                 logits.append(outp[1])
                 hidden_states.append(outp[2][-1])
@@ -66,7 +66,7 @@ class BertAdversarial(torch.nn.Module):
                 hidden_states.append(outp[1][-1])
                 
         return (
-            loss,
+            torch.stack(loss).mean() if loss is not None else None,
             torch.cat(logits, dim=0),
             torch.cat(hidden_states, dim=0)
         )
