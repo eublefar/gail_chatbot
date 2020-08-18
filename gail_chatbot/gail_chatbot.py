@@ -73,8 +73,9 @@ class GailChatbot(Agent):
             self._create_from_shared(shared)
         else:
             self._create_from_path(opt["model_file"])
-#             if APEX_AVAILABLE:
-#                 self.init_apex()
+
+    #             if APEX_AVAILABLE:
+    #                 self.init_apex()
 
     def _create_from_shared(self, shared: Dict[str, Any]):
         self.generator = shared["generator"]
@@ -100,8 +101,8 @@ class GailChatbot(Agent):
         params.update(overwrite_params)
         params.update({"n_envs": self.gen_sub_batch_size})
         # To stabilize training accumulate gradients over bigger batch size than adversarial
-        params.update({"batch_size": self.batch_size * 2}) 
-        
+        params.update({"batch_size": self.batch_size * 2})
+
         self.generator_policy = GptPolicy()
         params["policy"] = self.generator_policy
         self.generator = PPO(**params)
@@ -132,13 +133,8 @@ class GailChatbot(Agent):
 
     def init_apex(self):
         print(self.device)
-        (
-            self.generator.policy,
-            self.generator.optimizer,
-        ) = amp.initialize(
-            self.generator.policy,
-            self.generator.optimizer,
-            opt_level="O0",
+        (self.generator.policy, self.generator.optimizer,) = amp.initialize(
+            self.generator.policy, self.generator.optimizer, opt_level="O0",
         )
         self.generator_policy = self.generator.policy
 
@@ -204,7 +200,9 @@ class GailChatbot(Agent):
         raise NotImplementedError()
 
     def batch_act(self, observations: List[Message]):
-        self.is_eval = any(["eval_labels" in observation for observation in observations])
+        self.is_eval = any(
+            ["eval_labels" in observation for observation in observations]
+        )
 
         if self.is_eval:
             self.eval_step += 1
@@ -229,44 +227,33 @@ class GailChatbot(Agent):
             )
             generated_dialogs = self.decode_reply(generated_dialogs)
             gen_dialogs_batch.extend(generated_dialogs)
-            #logits, loss 
+            # logits, loss
             scores = self.compute_rewards(
-                generated_dialogs, 
-                dialogs_pos[lower:upper], 
-                dialogs_neg[lower:upper]
+                generated_dialogs, dialogs_pos[lower:upper], dialogs_neg[lower:upper]
             )
-            
-#             self.metrics["adv_loss"] = loss
+
+            #             self.metrics["adv_loss"] = loss
             self.metrics["gen_reward"] = scores.mean()
-            
+
             for i, final_transition in enumerate(final_transitions):
                 if final_transition is not None:
                     final_transition[2] = scores[i]
             self.generator.batch_memorize(final_transitions)
-        
-#         self.adversarial.scaler.step(self.adversarial.optimizer)
-#         self.adversarial.scaler.update()
-#         self.adversarial.optimizer.zero_grad()
-        
+
+        #         self.adversarial.scaler.step(self.adversarial.optimizer)
+        #         self.adversarial.scaler.update()
+        #         self.adversarial.optimizer.zero_grad()
+
         self.generator.update(self.gen_episode_num)
-        
 
-
-#         if self.metrics["pos_logits"] < 0:
-#             print(logits.shape)
-#             print(logits)
-#             raise RuntimeError()
-        
         if self.train_step % self.episode_num_log == 0 and self.train_step:
             self.write_metrics()
 
         if self.train_step % self.episode_num_dialog_dump == 0 and self.train_step != 0:
-            self.checkpoint(
-                gen_dialogs_batch
-            )
+            self.checkpoint(gen_dialogs_batch)
 
         return [{"id": self.id} for observation in observations]
-    
+
     def decode_reply(self, generated_dialogs):
         generated_dialogs_converted = []
         for persona, history, generated in generated_dialogs:
@@ -278,56 +265,58 @@ class GailChatbot(Agent):
             generated_dialogs_converted.append((persona, history + [reply_str]))
         return generated_dialogs_converted
 
-    def compute_rewards(self, 
-                        dialogs_gen,
-                        dialogs_pos,
-                        dialogs_neg):
+    def compute_rewards(self, dialogs_gen, dialogs_pos, dialogs_neg):
         X = [
-#             *dialogs_neg, 
+            #             *dialogs_neg,
             *dialogs_pos,
-            *dialogs_gen
-            ]
+            *dialogs_gen,
+        ]
         y = torch.cat(
             (
-#                 torch.zeros(size=(len(dialogs_neg),), dtype=torch.long),
+                #                 torch.zeros(size=(len(dialogs_neg),), dtype=torch.long),
                 torch.ones(size=(len(dialogs_pos),), dtype=torch.long),
                 torch.zeros(size=(len(dialogs_gen),), dtype=torch.long),
             )
         ).to(self.adversarial.get_device())
-        loss, logits, hidden_states = self.adversarial(X, y, sub_batch=self.adv_sub_batch_size)
-        
+        loss, logits, hidden_states = self.adversarial(
+            X, y, sub_batch=self.adv_sub_batch_size
+        )
+
         probs = torch.softmax(logits, dim=-1)
-        
+
         self.metrics["neg_logits"] = probs[: len(dialogs_neg), 1].mean()
-        self.metrics["pos_logits"] = probs[:len(dialogs_pos), 1].mean()
-        self.metrics["gen_logits"] = probs[len(dialogs_pos):, 1].mean()
-        
-        adequacy_scores = probs[-len(dialogs_gen):, 1]
-        
+        self.metrics["pos_logits"] = probs[: len(dialogs_pos), 1].mean()
+        self.metrics["gen_logits"] = probs[len(dialogs_pos) :, 1].mean()
+
+        adequacy_scores = probs[-len(dialogs_gen) :, 1]
+
         positive_embs = hidden_states[: len(dialogs_pos), 0, :]
-        generated_embs = hidden_states[len(dialogs_pos):, 0, :]
+        generated_embs = hidden_states[len(dialogs_pos) :, 0, :]
         next_sentence_similarity_scores = torch.nn.functional.cosine_similarity(
             positive_embs, generated_embs, dim=-1
         )
-        self.metrics['next_sentence_similarity_scores'] = next_sentence_similarity_scores.mean()
+        self.metrics[
+            "next_sentence_similarity_scores"
+        ] = next_sentence_similarity_scores.mean()
         reward_scores = (
             (adequacy_scores + self.similarity_coef * next_sentence_similarity_scores)
             .cpu()
             .detach()
             .numpy()
         )
-#         reward_scores = []
-#         for dialog in dialogs_gen: 
-#             _, reply = dialog
-#             reply = reply[-1]
-#             reward_scores.append( 1 if ("Hello" in reply or "hi" in reply or "how" in reply or "what" in reply) else -1) 
+        #         reward_scores = []
+        #         for dialog in dialogs_gen:
+        #             _, reply = dialog
+        #             reply = reply[-1]
+        #             reward_scores.append( 1 if ("Hello" in reply or "hi" in reply or "how" in reply or "what" in reply) else -1)
         return np.asarray(reward_scores)
-#     (
-#             ,
-# #             logits,
-# #             loss
-#         )
-    
+
+    #     (
+    #             ,
+    # #             logits,
+    # #             loss
+    #         )
+
     def write_metrics(self):
         metrics = self.generator.metrics(
             self.train_step if not self.is_eval else self.eval_step
@@ -340,11 +329,11 @@ class GailChatbot(Agent):
                 v,
                 global_step=self.train_step if not self.is_eval else self.eval_step,
             )
-        
-    def checkpoint(self, 
-                   dialogs
-        ):
-        gen_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["generator"]) + "_{}".format(self.train_step)
+
+    def checkpoint(self, dialogs):
+        gen_p = os.path.join(
+            self.checkpoint_path, self.MODEL_SUBPATHS["generator"]
+        ) + "_{}".format(self.train_step)
         if not os.path.isdir(gen_p):
             os.mkdir(gen_p)
         self.generator_policy.save(gen_p)
@@ -356,10 +345,10 @@ class GailChatbot(Agent):
             os.path.join(
                 self.dialog_dump_path, "dialogs{}.json".format(self.train_step)
             ),
-            "w"
+            "w",
         ) as dialog_file:
             json.dump(dialogs, dialog_file)
-    
+
     def flatten(
         self, observations: List[Message]
     ) -> Tuple[
