@@ -5,7 +5,14 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from itertools import chain
-from torch.cuda.amp import autocast, GradScaler
+from contextlib import suppress
+
+try:
+    from torch.cuda.amp import autocast, GradScaler
+
+    MIXED_PREC = True
+except ImportError as e:
+    MIXED_PREC = False
 
 
 class BertAdversarial(torch.nn.Module):
@@ -16,17 +23,26 @@ class BertAdversarial(torch.nn.Module):
             "albert-base-v2"
         )
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
-        self.scaler = GradScaler()
+        if MIXED_PREC:
+            self.scaler = GradScaler()
 
     def fit_batch(
-        self, dialogs: List[Tuple[str, List[str]]], labels: List[int], sub_batch: int = 8
+        self,
+        dialogs: List[Tuple[str, List[str]]],
+        labels: List[int],
+        sub_batch: int = 8,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         labels = torch.LongTensor(labels).to(self.get_device())
         loss, logits, hidden_states = self(dialogs, labels, sub_batch)
 
-#         clip_grad_norm_(self.model.parameters(), 20)
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        if MIXED_PREC:
+            self.scaler.unscale_(self.optimizer)
+            clip_grad_norm_(self.model.parameters(), 20)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            clip_grad_norm_(self.model.parameters(), 20)
+            self.optimizer.step()
         self.optimizer.zero_grad()
         return logits, hidden_states, loss
 
@@ -35,7 +51,10 @@ class BertAdversarial(torch.nn.Module):
         return p.device
 
     def forward(
-        self, dialogs: List[Tuple[str, List[str]]], labels: torch.LongTensor = None, sub_batch: int = 16
+        self,
+        dialogs: List[Tuple[str, List[str]]],
+        labels: torch.LongTensor = None,
+        sub_batch: int = 16,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         preprocessed_dialogs = [
             self._build_inputs_dialogs(persona, history) for persona, history in dialogs
@@ -44,10 +63,12 @@ class BertAdversarial(torch.nn.Module):
             preprocessed_dialogs
         )
         loss, logits, hidden_states = [], [], []
-        for i in range(token_ids.shape[0]//sub_batch + int(token_ids.shape[0] % sub_batch != 0)):
-            lower = i*sub_batch
-            upper = (i + 1)*sub_batch
-            with autocast():
+        for i in range(
+            token_ids.shape[0] // sub_batch + int(token_ids.shape[0] % sub_batch != 0)
+        ):
+            lower = i * sub_batch
+            upper = (i + 1) * sub_batch
+            with autocast() if MIXED_PREC else suppress():
                 outp = self.model(
                     input_ids=token_ids[lower:upper],
                     attention_mask=attention_mask[lower:upper],
@@ -56,19 +77,23 @@ class BertAdversarial(torch.nn.Module):
                     output_hidden_states=True,
                 )
             if labels is not None:
-                
-                self.scaler.scale(outp[0]).backward()
+
+                (
+                    self.scaler.scale(outp[0]).backward()
+                    if MIXED_PREC
+                    else outp[0].backward()
+                )
                 loss.append(outp[0])
                 logits.append(outp[1])
                 hidden_states.append(outp[2][-1])
             else:
                 logits.append(outp[0])
                 hidden_states.append(outp[1][-1])
-                
+
         return (
             torch.stack(loss).mean() if loss is not None else None,
             torch.cat(logits, dim=0),
-            torch.cat(hidden_states, dim=0)
+            torch.cat(hidden_states, dim=0),
         )
 
     def _build_inputs_dialogs(self, persona, history):

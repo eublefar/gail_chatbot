@@ -5,7 +5,16 @@ import numpy as np
 import torch
 from transformers import AutoModelWithLMHead, AutoTokenizer
 from gym_loop.policies.base_policy import BasePolicy
-from torch.cuda.amp import autocast
+from contextlib import suppress
+import torch.nn.functional as F
+from torch.distributions import MultivariateNormal
+
+try:
+    from torch.cuda.amp import autocast
+
+    MIXED_PREC = True
+except ImportError as e:
+    MIXED_PREC = False
 
 
 class GptPolicy(torch.nn.Module, BasePolicy):
@@ -15,10 +24,12 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-small")
         self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-small")
 
-        self.value_head = torch.nn.Sequential(
-            torch.nn.Linear(768, 512), torch.nn.ReLU(False), torch.nn.Linear(512, 1),
-        )
-        self.cache = {}
+        self.loc_transform_layer = torch.nn.Linear(768, 768)
+        self.std_layer = torch.nn.Linear(768, 768)
+
+        self.value_head = torch.nn.Linear(768, 1)
+        self.cache = None
+        self.use_cache = True
 
     def save(self, path: str):
         torch.save(self.model.state_dict(), os.path.join(path, "model.bin"))
@@ -34,82 +45,32 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         _, p = next(self.model.named_parameters())
         return p.device
 
-    def act(
-        self, state: Tuple[str, List[str], List[str]]
-    ) -> Dict[str, Union[np.ndarray, torch.Tensor]]:
-        cache_str = state[0] + "\n".join(state[1]) + " ".join(state[2][:-1])
-        past_key_values = self.cache.pop(cache_str, None)
-        outp = self([state], past_key_values)
-        try:
-            action = torch.distributions.Categorical(
-                outp["action_distribution"].cpu()
-            ).sample()
-        except RuntimeError:
-            print(outp["action_distribution"])
-            print(torch.isnan(outp["action_distribution"]).any())
-        outp["action"] = action.numpy()
+    def __call__(self, *args, **kwargs):
+        return torch.nn.Module.__call__(self, *args, **kwargs)
 
-        new_cache_str = state[0] + "\n".join(state[1]) + " ".join(state[2])
-        self.cache[new_cache_str] = outp["past_key_values"]
-        return outp
-
-    def batch_act(self, state_batch):
-        if isinstance(self.cache, dict):
+    def forward(self, state_batch: List[Tuple[str, List[str], List[str]]]):
+        if self.use_cache:
             past_key_values = None
         else:
             past_key_values = self.cache
 
-        outp = self(state_batch, past_key_values)
-
-        try:
-            action = torch.distributions.Categorical(
-                outp["action_distribution"].cpu()
-            ).sample()
-        except RuntimeError:
-            print(outp["action_distribution"])
-            print(torch.isnan(outp["action_distribution"]).any())
-        outp["actions"] = action.numpy()
-        del self.cache
-        self.cache = outp["past_key_values"]
-        return outp
-
-    def __call__(self, *args, **kwargs):
-        return torch.nn.Module.__call__(self, *args, **kwargs)
-
-    def forward(
-        self,
-        state_batch: List[Tuple[str, List[str], List[str]]],
-        past_key_values: List[torch.Tensor] = None,
-    ):
         if past_key_values is not None:
             state_batch = [("", [], [state[2][-1]]) for state in state_batch]
-
         input_ids, token_type_ids_batch, seqlen, attention_mask = self._build_inputs(
             state_batch
         )
 
         input_ids = torch.LongTensor(input_ids).to(self.get_device())
-        token_type_ids = torch.LongTensor(
-            token_type_ids_batch
-        ).to(self.get_device())
+        token_type_ids = torch.LongTensor(token_type_ids_batch).to(self.get_device())
         attention_mask = torch.LongTensor(attention_mask).to(self.get_device())
-        with autocast():
-            action_dist, cache, hidden_states = self.model(
+
+        with autocast() if MIXED_PREC else suppress():
+            last_layer_hidden_states, cache = self.model.transformer(
                 input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
                 past=past_key_values,
-                output_hidden_states=True,
             )
-
-        last_layer_hidden_states = hidden_states[-1]
-        last_action_ids = (
-            (torch.LongTensor(seqlen) - 1)
-            .unsqueeze(-1)
-            .unsqueeze(-1)
-            .expand([-1, -1, action_dist.shape[-1]])
-        ).to(self.get_device())
-        action_dist = action_dist.gather(1, last_action_ids).squeeze(1)
 
         last_feature_ids = (
             (torch.LongTensor(seqlen) - 1)
@@ -118,14 +79,28 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             .expand([-1, -1, last_layer_hidden_states.shape[-1]])
         ).to(self.get_device())
         features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
+
         values = self.value_head(features)
 
+        means = features + self.loc_transform_layer(features)
+        stds = F.relu(self.std_layer(features)) + 1e-10
+
+        self.cache = cache
         return {
-            "action_distribution": torch.nn.functional.softmax(action_dist, dim=-1)
-            + 1e-8,
+            "action_distribution": MultivariateNormal(means, stds.diag_embed()),
             "values": values.squeeze(-1),
-            "past_key_values": cache,
         }
+
+    def enable_cache(self):
+        self.use_cache = True
+
+    def disable_cache(self):
+        self.clear_cache()
+        self.use_cache = False
+
+    def decode(self, hidden_states):
+        hidden_states = torch.FloatTensor(hidden_states)
+        return torch.argmax(self.model.lm_head(hidden_states), dim=-1)
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], List[str]]]):
         token_type_batch = []
@@ -185,5 +160,5 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
     def clear_cache(self):
         del self.cache
-        self.cache = {}
+        self.cache = None
         gc.collect()
