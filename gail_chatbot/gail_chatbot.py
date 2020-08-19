@@ -49,8 +49,8 @@ class GailChatbot(Agent):
         # Hyperparameters
         self.similarity_coef = 0.2
         self.episode_num_log = 1
-        self.episode_num_dialog_dump = 200
-        self.episode_checkpoint_num = 200
+        self.episode_num_dialog_dump = 100
+        self.episode_checkpoint_num = 100
         self.update_generator = True
         self.update_adversarial = True
         self.dialog_dump_path = opt["model_file"] + "_dialogs"
@@ -107,8 +107,7 @@ class GailChatbot(Agent):
         params = PPO.get_default_parameters()
         params.update(overwrite_params)
         params.update({"n_envs": self.gen_sub_batch_size})
-        # To stabilize training accumulate gradients over bigger batch size than adversarial
-        params.update({"batch_size": self.batch_size * 2})
+        params.update({"batch_size": self.batch_size})
 
         self.generator_policy = GptPolicy()
         params["policy"] = self.generator_policy
@@ -137,13 +136,6 @@ class GailChatbot(Agent):
             self.adversarial.cuda(1)
         else:
             self.adversarial.to(self.device)
-
-    def init_apex(self):
-        print(self.device)
-        (self.generator.policy, self.generator.optimizer,) = amp.initialize(
-            self.generator.policy, self.generator.optimizer, opt_level="O0",
-        )
-        self.generator_policy = self.generator.policy
 
     def share(self) -> Dict[str, Any]:
         return dict(
@@ -242,7 +234,7 @@ class GailChatbot(Agent):
                 generated_dialogs, dialogs_pos[lower:upper], dialogs_neg[lower:upper]
             )
 
-            self.metrics["adv_loss"] = loss if self.update_adversarial else -1
+            self.metrics["adv_loss"] = loss.detach() if self.update_adversarial else -1
             self.metrics["gen_reward"] = scores.mean() if self.update_generator else -1
 
             if self.update_generator:
@@ -251,13 +243,13 @@ class GailChatbot(Agent):
                         final_transition[2] = scores[i]
                 self.generator.batch_memorize(final_transitions)
 
-            if self.update_adversarial:
-                if MIXED_PREC:
-                    self.adversarial.scaler.step(self.adversarial.optimizer)
-                    self.adversarial.scaler.update()
-                else:
-                    self.adversarial.optimizer.step()
-                self.adversarial.optimizer.zero_grad()
+        if self.update_adversarial:
+            if MIXED_PREC:
+                self.adversarial.scaler.step(self.adversarial.optimizer)
+                self.adversarial.scaler.update()
+            else:
+                self.adversarial.optimizer.step()
+            self.adversarial.optimizer.zero_grad()
 
         if self.update_generator:
             self.generator_policy.disable_cache()
@@ -268,9 +260,8 @@ class GailChatbot(Agent):
             self.write_metrics()
 
         if (
-            self.train_step % self.episode_num_dialog_dump == 0
+            (self.train_step % self.episode_num_dialog_dump == 0)
             and self.train_step != 0
-            and self.update_generator
         ):
             self.checkpoint(gen_dialogs_batch)
 
@@ -290,7 +281,7 @@ class GailChatbot(Agent):
     def compute_rewards(self, dialogs_gen, dialogs_pos, dialogs_neg):
         X = [
             *(dialogs_neg if self.update_adversarial else []),
-            *(dialogs_pos if self.update_adversarial else []),
+            *(dialogs_pos if self.update_adversarial or self.update_generator else []),
             *(dialogs_gen if self.update_generator else []),
         ]
         y = torch.cat(
@@ -298,17 +289,20 @@ class GailChatbot(Agent):
                 torch.zeros(
                     size=(len(dialogs_neg) if self.update_adversarial else 0,),
                     dtype=torch.long,
+                    device=self.adversarial.get_device()
                 ),
                 torch.ones(
-                    size=(len(dialogs_pos) if self.update_adversarial else 0,),
+                    size=(len(dialogs_pos) if self.update_adversarial or self.update_generator else 0,),
                     dtype=torch.long,
+                    device=self.adversarial.get_device()
                 ),
                 torch.zeros(
                     size=(len(dialogs_gen) if self.update_generator else 0,),
                     dtype=torch.long,
+                    device=self.adversarial.get_device(),
                 ),
             )
-        ).to(self.adversarial.get_device())
+        )
 
         loss, logits, hidden_states = self.adversarial(
             X, y, sub_batch=self.adv_sub_batch_size
@@ -317,13 +311,14 @@ class GailChatbot(Agent):
         probs = torch.softmax(logits, dim=-1)
 
         self.metrics["neg_logits"] = (
-            probs[: len(dialogs_neg), 1].mean() if self.update_adversarial else -1
+            probs[: len(dialogs_neg), 1].mean().cpu().detach() if self.update_adversarial else -1
         )
+        neg_len = len(dialogs_neg) if self.update_adversarial else 0
         self.metrics["pos_logits"] = (
-            probs[: len(dialogs_pos), 1].mean() if self.update_adversarial else -1
+            probs[neg_len: neg_len + len(dialogs_pos), 1].mean().cpu().detach() if self.update_adversarial or self.update_generator else -1
         )
         self.metrics["gen_logits"] = (
-            probs[len(dialogs_pos) :, 1].mean() if self.update_generator else -1
+            probs[- len(dialogs_gen) :, 1].mean().cpu().detach() if self.update_generator else -1
         )
 
         if self.update_generator:
@@ -337,7 +332,7 @@ class GailChatbot(Agent):
             )
             self.metrics[
                 "next_sentence_similarity_scores"
-            ] = next_sentence_similarity_scores.mean()
+            ] = next_sentence_similarity_scores.mean().detach()
             reward_scores = (
                 (
                     adequacy_scores
@@ -350,7 +345,7 @@ class GailChatbot(Agent):
         else:
             next_sentence_similarity_scores = None
             reward_scores = []
-        return (np.asarray(reward_scores), logits, loss)
+        return (np.asarray(reward_scores), logits.detach(), loss.detach())
 
     def write_metrics(self):
         metrics = self.generator.metrics(
@@ -410,7 +405,7 @@ class GailChatbot(Agent):
         self,
         dialogs: Iterable[Tuple[str, List[str]]],
         episode_num: int = 0,
-        max_len: int = 16,
+        max_len: int = 14,
     ):
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
@@ -423,7 +418,6 @@ class GailChatbot(Agent):
                 break
             actions = self.generator.batch_act(dialogs, done)
             ids = self.generator_policy.decode(actions)
-            print(ids)
             words = self.generator_policy.tokenizer.convert_ids_to_tokens(ids)
             for i, dialog in enumerate(dialogs):
                 if done[i]:
@@ -451,6 +445,7 @@ class GailChatbot(Agent):
         return dialogs, final_transitions, episode_num
 
     def __del__(self):
+        self.checkpoint([])
         self.writer.close()
         super().__del__()
 
