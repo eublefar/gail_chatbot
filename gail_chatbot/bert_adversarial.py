@@ -63,9 +63,8 @@ class BertAdversarial(torch.nn.Module):
             preprocessed_dialogs
         )
         loss, logits, hidden_states = [], [], []
-        for i in range(
-            token_ids.shape[0] // sub_batch + int(token_ids.shape[0] % sub_batch != 0)
-        ):
+        iters = token_ids.shape[0] // sub_batch + int(token_ids.shape[0] % sub_batch != 0)
+        for i in range(iters):
             lower = i * sub_batch
             upper = (i + 1) * sub_batch
             with autocast() if MIXED_PREC else suppress():
@@ -79,9 +78,9 @@ class BertAdversarial(torch.nn.Module):
             if labels is not None:
 
                 (
-                    self.scaler.scale(outp[0]).backward()
+                    (self.scaler.scale(outp[0])/iters).backward()
                     if MIXED_PREC
-                    else outp[0].backward()
+                    else (outp[0]/iters).backward()
                 )
                 loss.append(outp[0])
                 logits.append(outp[1])

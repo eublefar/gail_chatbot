@@ -23,27 +23,27 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
         self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
-#         self.loc_transform_layer = torch.nn.Linear(768, 768)
+        self.loc_transform_layer = torch.nn.Linear(1024, 1024)
         self.std_layer = torch.nn.Sequential(
-            torch.nn.Linear(768, 768),
+            torch.nn.Linear(1024, 1024),
             torch.nn.ReLU(True),
-            torch.nn.Linear(768, 768)
+            torch.nn.Linear(1024, 1024)
         )
 
-        self.value_head = torch.nn.Linear(768, 1)
+        self.value_head = torch.nn.Linear(1024, 1)
         self.cache = None
         self.use_cache = True
     
     def save(self, path: str):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
         torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
-#         torch.save(self.loc_transform_layer.state_dict(), os.path.join(path, "loc_head.bin"))
+        torch.save(self.loc_transform_layer.state_dict(), os.path.join(path, "loc_head.bin"))
         torch.save(self.std_layer.state_dict(), os.path.join(path, "std_head.bin"))
         
     def load(self, path: str):
         self.model.from_pretrained(os.path.join(path, "model.bin"))
         self.value_head.load_state_dict(torch.load(os.path.join(path, "value_head.bin")))
-#         self.loc_transform_layer.load_state_dict(torch.load(os.path.join(path, "loc_head.bin")))
+        self.loc_transform_layer.load_state_dict(torch.load(os.path.join(path, "loc_head.bin")))
         self.std_layer.load_state_dict(torch.load(os.path.join(path, "std_head.bin")))
 
     def get_device(self):
@@ -82,23 +82,24 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 attention_mask=attention_mask,
                 past=past_key_values,
             )
-        last_feature_ids = (
-            (torch.LongTensor(seqlen) - 1)
-            .unsqueeze(-1)
-            .unsqueeze(-1)
-            .expand([-1, -1, last_layer_hidden_states.shape[-1]])
-        ).to(self.get_device())
-        features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
+            last_feature_ids = (
+                (torch.LongTensor(seqlen) - 1)
+                .unsqueeze(-1)
+                .unsqueeze(-1)
+                .expand([-1, -1, last_layer_hidden_states.shape[-1]])
+            ).to(self.get_device())
+            features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
 
-        values = self.value_head(features)
+            values = self.value_head(features)
 
-        means = features
-        stds = F.relu(self.std_layer(features)) + 1e-10
+            means = features + self.loc_transform_layer(features)
+            stds = F.relu(self.std_layer(features))
+        stds = stds.float() + 1e-10
         
         if self.use_cache:
             self.cache = past_key_values
         return {
-            "action_distribution": MultivariateNormal(means, stds.diag_embed(), validate_args=True),
+            "action_distribution": MultivariateNormal(means.float(), stds.diag_embed(), validate_args=True),
             "values": values.squeeze(-1),
         }
 
