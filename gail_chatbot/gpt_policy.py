@@ -32,8 +32,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.use_cache = True
 
     def save(self, path: str):
-        torch.save(self.model.state_dict(), os.path.join(path, "model.bin"))
-        torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
+        torch.save(self.state_dict(), os.path.join(path, "model.bin"))
 
     def load(self, path: str):
         self.model.load_state_dict(torch.load(os.path.join(path, "model.bin")))
