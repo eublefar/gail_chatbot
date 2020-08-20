@@ -53,6 +53,7 @@ class GailChatbot(Agent):
         self.episode_checkpoint_num = 100
         self.update_generator = True
         self.update_adversarial = True
+        self.add_distractors = False
         self.dialog_dump_path = opt["model_file"] + "_dialogs"
         self.checkpoint_path = os.path.split(opt["model_file"])[0]
         if not os.path.isdir(self.dialog_dump_path):
@@ -207,6 +208,7 @@ class GailChatbot(Agent):
             self.eval_step += 1
         else:
             self.train_step += 1
+            
 
         #  Optimize generative model
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
@@ -280,14 +282,14 @@ class GailChatbot(Agent):
 
     def compute_rewards(self, dialogs_gen, dialogs_pos, dialogs_neg):
         X = [
-            *(dialogs_neg if self.update_adversarial else []),
+            *(dialogs_neg if self.update_adversarial and self.add_distractors else []),
             *(dialogs_pos if self.update_adversarial or self.update_generator else []),
             *(dialogs_gen if self.update_generator else []),
         ]
         y = torch.cat(
             (
                 torch.zeros(
-                    size=(len(dialogs_neg) if self.update_adversarial else 0,),
+                    size=(len(dialogs_neg) if self.update_adversarial and self.add_distractors else 0,),
                     dtype=torch.long,
                     device=self.adversarial.get_device()
                 ),
@@ -311,9 +313,9 @@ class GailChatbot(Agent):
         probs = torch.softmax(logits, dim=-1)
 
         self.metrics["neg_logits"] = (
-            probs[: len(dialogs_neg), 1].mean().cpu().detach() if self.update_adversarial else -1
+            probs[: len(dialogs_neg), 1].mean().cpu().detach() if self.update_adversarial and self.add_distractors else -1
         )
-        neg_len = len(dialogs_neg) if self.update_adversarial else 0
+        neg_len = len(dialogs_neg) if self.update_adversarial and self.add_distractors  else 0
         self.metrics["pos_logits"] = (
             probs[neg_len: neg_len + len(dialogs_pos), 1].mean().cpu().detach() if self.update_adversarial or self.update_generator else -1
         )

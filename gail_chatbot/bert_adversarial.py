@@ -16,7 +16,7 @@ except ImportError as e:
 
 
 class BertAdversarial(torch.nn.Module):
-    def __init__(self, lr=1e-5, mixed_precision=True):
+    def __init__(self, lr=1e-6, mixed_precision=True):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("albert-base-v2")
         self.model = AutoModelForSequenceClassification.from_pretrained(

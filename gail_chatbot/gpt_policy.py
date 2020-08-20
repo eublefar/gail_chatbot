@@ -21,10 +21,14 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def __init__(self, *args, **kwargs):
         torch.nn.Module.__init__(self)
 
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-small")
-        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-small")
-        self.loc_transform_layer = torch.nn.Linear(768, 768)
-        self.std_layer = torch.nn.Linear(768, 768)
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
+#         self.loc_transform_layer = torch.nn.Linear(768, 768)
+        self.std_layer = torch.nn.Sequential(
+            torch.nn.Linear(768, 768),
+            torch.nn.ReLU(True),
+            torch.nn.Linear(768, 768)
+        )
 
         self.value_head = torch.nn.Linear(768, 1)
         self.cache = None
@@ -33,13 +37,13 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def save(self, path: str):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
         torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
-        torch.save(self.loc_transform_layer.state_dict(), os.path.join(path, "loc_head.bin"))
+#         torch.save(self.loc_transform_layer.state_dict(), os.path.join(path, "loc_head.bin"))
         torch.save(self.std_layer.state_dict(), os.path.join(path, "std_head.bin"))
         
     def load(self, path: str):
         self.model.from_pretrained(os.path.join(path, "model.bin"))
         self.value_head.load_state_dict(torch.load(os.path.join(path, "value_head.bin")))
-        self.loc_transform_layer.load_state_dict(torch.load(os.path.join(path, "loc_head.bin")))
+#         self.loc_transform_layer.load_state_dict(torch.load(os.path.join(path, "loc_head.bin")))
         self.std_layer.load_state_dict(torch.load(os.path.join(path, "std_head.bin")))
 
     def get_device(self):
@@ -88,14 +92,13 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         values = self.value_head(features)
 
-        means = features + self.loc_transform_layer(features)
+        means = features
         stds = F.relu(self.std_layer(features)) + 1e-10
         
         if self.use_cache:
             self.cache = past_key_values
-            
         return {
-            "action_distribution": MultivariateNormal(means, stds.diag_embed()),
+            "action_distribution": MultivariateNormal(means, stds.diag_embed(), validate_args=True),
             "values": values.squeeze(-1),
         }
 
