@@ -21,24 +21,36 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def __init__(self, *args, **kwargs):
         torch.nn.Module.__init__(self)
 
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-small")
-        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-small")
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
+        self.loc_transform_layer = torch.nn.Linear(1024, 1024)
+        self.std_layer = torch.nn.Sequential(
+            torch.nn.Linear(1024, 1024),
+            torch.nn.ReLU(True),
+            torch.nn.Linear(1024, 1024),
+        )
 
-        self.loc_transform_layer = torch.nn.Linear(768, 768)
-        self.std_layer = torch.nn.Linear(768, 768)
-
-        self.value_head = torch.nn.Linear(768, 1)
+        self.value_head = torch.nn.Linear(1024, 1)
         self.cache = None
         self.use_cache = True
 
     def save(self, path: str):
-        torch.save(self.state_dict(), os.path.join(path, "model.bin"))
+        self.model.save_pretrained(os.path.join(path, "model.bin"))
+        torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
+        torch.save(
+            self.loc_transform_layer.state_dict(), os.path.join(path, "loc_head.bin")
+        )
+        torch.save(self.std_layer.state_dict(), os.path.join(path, "std_head.bin"))
 
     def load(self, path: str):
-        self.model.load_state_dict(torch.load(os.path.join(path, "model.bin")))
+        self.model.from_pretrained(os.path.join(path, "model.bin"))
         self.value_head.load_state_dict(
             torch.load(os.path.join(path, "value_head.bin"))
         )
+        self.loc_transform_layer.load_state_dict(
+            torch.load(os.path.join(path, "loc_head.bin"))
+        )
+        self.std_layer.load_state_dict(torch.load(os.path.join(path, "std_head.bin")))
 
     def get_device(self):
         _, p = next(self.model.named_parameters())
@@ -49,12 +61,18 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
     def forward(self, state_batch: List[Tuple[str, List[str], List[str]]]):
         if self.use_cache:
-            past_key_values = None
-        else:
             past_key_values = self.cache
+        else:
+            past_key_values = None
 
         if past_key_values is not None:
-            state_batch = [("", [], [state[2][-1]]) for state in state_batch]
+            try:
+                state_batch = [("", [], [state[2][-1]]) for state in state_batch]
+            except IndexError as e:
+                print(self.use_cache)
+                print(past_key_values)
+                print(state_batch)
+
         input_ids, token_type_ids_batch, seqlen, attention_mask = self._build_inputs(
             state_batch
         )
@@ -64,29 +82,32 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         attention_mask = torch.LongTensor(attention_mask).to(self.get_device())
 
         with autocast() if MIXED_PREC else suppress():
-            last_layer_hidden_states, cache = self.model.transformer(
+            last_layer_hidden_states, past_key_values = self.model.transformer(
                 input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
                 past=past_key_values,
             )
+            last_feature_ids = (
+                (torch.LongTensor(seqlen) - 1)
+                .unsqueeze(-1)
+                .unsqueeze(-1)
+                .expand([-1, -1, last_layer_hidden_states.shape[-1]])
+            ).to(self.get_device())
+            features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
 
-        last_feature_ids = (
-            (torch.LongTensor(seqlen) - 1)
-            .unsqueeze(-1)
-            .unsqueeze(-1)
-            .expand([-1, -1, last_layer_hidden_states.shape[-1]])
-        ).to(self.get_device())
-        features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
+            values = self.value_head(features)
 
-        values = self.value_head(features)
+            means = features + self.loc_transform_layer(features)
+            stds = F.relu(self.std_layer(features))
+        stds = stds.float() + 1e-10
 
-        means = features + self.loc_transform_layer(features)
-        stds = F.relu(self.std_layer(features)) + 1e-10
-
-        self.cache = cache
+        if self.use_cache:
+            self.cache = past_key_values
         return {
-            "action_distribution": MultivariateNormal(means, stds.diag_embed()),
+            "action_distribution": MultivariateNormal(
+                means.float(), stds.diag_embed(), validate_args=True
+            ),
             "values": values.squeeze(-1),
         }
 
@@ -98,8 +119,13 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.use_cache = False
 
     def decode(self, hidden_states):
-        hidden_states = torch.FloatTensor(hidden_states)
-        return torch.argmax(self.model.lm_head(hidden_states), dim=-1)
+        hidden_states = torch.FloatTensor(hidden_states).to(self.get_device())
+        return (
+            torch.argmax(self.model.lm_head(hidden_states), dim=-1)
+            .cpu()
+            .detach()
+            .numpy()
+        )
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], List[str]]]):
         token_type_batch = []
@@ -160,4 +186,3 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def clear_cache(self):
         del self.cache
         self.cache = None
-        gc.collect()
