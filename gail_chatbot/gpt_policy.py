@@ -70,7 +70,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         if past_key_values is not None:
             try:
-                state_batch = [("", [], [state[2][-1]]) for state in state_batch]
+                state_batch = [("", [], state[2][-1].unsqueeze(-1)) for state in state_batch]
             except IndexError as e:
                 print(self.use_cache)
                 print(past_key_values)
@@ -83,6 +83,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
         token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
+        
 
         with autocast() if MIXED_PREC else suppress():
             last_layer_hidden_states, past_key_values = self.model.transformer(
@@ -91,20 +92,19 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 attention_mask=attention_mask,
                 past=past_key_values,
             )
-            t_seqlen = torch.LongTensor(seqlen)
             last_feature_ids = (
-                (t_seqlen.pin_memory() - 1)
-                .view([-1, 1, 1])
+                (torch.LongTensor(seqlen) - 1)
+                .unsqueeze(-1)
+                .unsqueeze(-1)
                 .expand([-1, -1, last_layer_hidden_states.shape[-1]])
             ).to(self.get_device(), non_blocking=True)
             features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
-
             values = self.value_head(features)
 
             means = features + self.loc_transform_layer(features)
             stds = F.relu(self.std_layer(features))
         stds = stds.float() + 1e-10
-
+        
         if self.use_cache:
             self.cache = past_key_values
         return {
@@ -122,7 +122,8 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.use_cache = False
 
     def decode(self, hidden_states):
-        return torch.argmax(self.model.lm_head(hidden_states).detach(), dim=-1).cpu(
+        return torch.argmax(self.model.lm_head(hidden_states).detach(), dim=-1).to(
+            'cpu',
             non_blocking=True
         )
 
@@ -132,94 +133,116 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         seqlen = []
         utterance_batch_list = [state[2] for state in state_batch]
         utterance_attention_list = [torch.ones_like(state[2]) for state in state_batch]
-
         persona_batch = [state[0] for state in state_batch]
-        persona_batch_outp = self.tokenizer(
-            persona_batch,
-            return_tensors="pt",
-            padding=True,
-            pad_to_multiple_of=8,
-            add_special_tokens=True,
-            return_attention_mask=True,
-        )
-        persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
-        persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
-        token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
-
-        history_batch = sum([state[1] for state in state_batch])
-        history_replies_num = [len(state[1]) for state in state_batch]
-        history_batch_outp = self.tokenizer(
-            history_batch,
-            return_tensors="pt",
-            padding=True,
-            pad_to_multiple_of=8,
-            add_special_tokens=True,
-            return_attention_mask=True,
-        )
-        history_batch_ids = history_batch_outp["input_ids"].pin_memory()
-        history_batch_mask = history_batch_outp["attention_mask"].pin_memory()
-
-        history_batch_ids_list = []
-        history_batch_mask_list = []
-        history_batch_token_type_list = []
-        num_sum = 0
-        for num in history_replies_num:
-            history_row_ids = history_batch_ids[num_sum:num, :]
-
-            history_row_ids_flat = history_row_ids.view([-1])
-            history_row_mask = history_batch_mask[num_sum:num, :].view([-1])
-
-            history_batch_ids_list.append(history_row_ids_flat)
-            history_batch_mask_list.append(history_row_mask)
-
-            history_types_ones = torch.ones_like(history_row_ids)
-            history_types_zeros = torch.zeros_like(history_row_ids)
-            history_types = (
-                torch.where(
-                    (torch.arange(0, num) % 2 == 0)
-                    .unsqueeze(-1)
-                    .expand_as(history_row_ids),
-                    history_types_ones,
-                    history_types_zeros,
-                )
-                .pin_memory()
-                .view(-1)
+        if all(persona_batch):
+            persona_batch_outp = self.tokenizer(
+                persona_batch,
+                return_tensors="pt",
+                padding=True,
+                pad_to_multiple_of=8,
+                add_special_tokens=True,
+                return_attention_mask=True,
+                return_length = True
             )
+            persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
+            persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
+            print(persona_batch_outp['length'])
+            token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
+        else:
+            persona_batch_ids = torch.empty(len(state_batch), 0, dtype=torch.long)
+            persona_batch_mask = torch.empty(len(state_batch), 0, dtype=torch.long)
+            token_types_persona = torch.empty(len(state_batch), 0, dtype=torch.long)
+            
+        history_batch = [turn for state in state_batch for turn in state[1] ]
+        history_replies_num = [len(state[1]) for state in state_batch]
+        
+        if history_batch:
+            history_batch_outp = self.tokenizer(
+                history_batch,
+                return_tensors="pt",
+                padding=True,
+                pad_to_multiple_of=8,
+                add_special_tokens=True,
+                return_attention_mask=True,
+            )
+            history_batch_ids = history_batch_outp["input_ids"].pin_memory()
+            history_batch_mask = history_batch_outp["attention_mask"].pin_memory()
 
-            history_batch_token_type_list.append(history_types)
+            history_batch_ids_list = []
+            history_batch_mask_list = []
+            history_batch_token_type_list = []
+            num_sum = 0
+            for num in history_replies_num:
+                history_row_ids = history_batch_ids[num_sum:num, :]
 
-        history_token_ids = pad_sequence(
-            history_batch_ids_list,
-            batch_first=True,
-            padding_value=self.tokenizer.eos_token_id,
-        )
-        history_mask = pad_sequence(
-            history_batch_mask_list, batch_first=True, padding_value=0.0
-        )
-        history_type_ids = pad_sequence(
-            history_batch_token_type_list, batch_first=True, padding_value=0.0
-        )
+                history_row_ids_flat = history_row_ids.view([-1])
+                history_row_mask = history_batch_mask[num_sum:num, :].view([-1])
 
-        utterance = pad_sequence(
-            utterance_batch_list,
-            batch_first=True,
-            padding_value=self.tokenizer.eos_token_id,
-        ).pin_memory()
-        utterance_attention = pad_sequence(
-            utterance_attention_list, batch_first=True, padding_value=0,
-        ).pin_memory()
+                history_batch_ids_list.append(history_row_ids_flat)
+                history_batch_mask_list.append(history_row_mask)
 
-        token_types_utterance = torch.zeros_like(utterance).pin_memory()
+                history_types_ones = torch.ones_like(history_row_ids)
+                history_types_zeros = torch.zeros_like(history_row_ids)
+                history_types = (
+                    torch.where(
+                        (torch.arange(0, num) % 2 == 0)
+                        .unsqueeze(-1)
+                        .expand_as(history_row_ids),
+                        history_types_ones,
+                        history_types_zeros,
+                    )
+                    .pin_memory()
+                    .view(-1)
+                )
 
-        input_ids = torch.cat([persona_batch_ids, history_token_ids, utterances], dim=1)
-        token_type_ids_batch = torch.cat(
-            [token_types_persona, history_type_ids, token_types_utterance], dim=1
-        )
-        attention_mask = torch.cat(
-            [persona_batch_mask, history_mask, utterance_attention], dim=1
-        )
+                history_batch_token_type_list.append(history_types)
 
-        return input_ids, token_type_ids_batch, seqlen, attention_mask
+            history_token_ids = pad_sequence(
+                history_batch_ids_list,
+                batch_first=True,
+                padding_value=self.tokenizer.eos_token_id,
+            )
+            history_mask = pad_sequence(
+                history_batch_mask_list, batch_first=True, padding_value=0.0
+            )
+            history_type_ids = pad_sequence(
+                history_batch_token_type_list, batch_first=True, padding_value=0.0
+            )
+            history_token_ids = torch.cat([persona_batch_ids, history_token_ids], dim=1)
+            history_mask = torch.cat([persona_batch_mask, history_mask], dim=1)
+            history_type_ids = torch.cat([token_types_persona, history_type_ids], dim=1)
+        else:
+            history_token_ids = persona_batch_ids
+            history_mask = persona_batch_mask
+            history_type_ids = token_types_persona
+            
+        if any([el.nelement() != 0 for el in utterance_batch_list]):
+            lengths = [persona_batch_ids.shape[1] + history_type_ids.shape[1] + el.shape[0] for el in utterance_batch_list]
+            utterance = pad_sequence(
+                utterance_batch_list,
+                batch_first=True,
+                padding_value=self.tokenizer.eos_token_id,
+            ).pin_memory()
+            utterance_attention = pad_sequence(
+                utterance_attention_list, batch_first=True, padding_value=0,
+            ).pin_memory()
+            token_types_utterance = torch.zeros_like(utterance).pin_memory()
+
+            input_ids = torch.cat([history_token_ids, utterance], dim=1)
+            token_type_ids_batch = torch.cat(
+                [history_type_ids, token_types_utterance], dim=1
+            )
+            attention_mask = torch.cat(
+                [history_mask, utterance_attention], dim=1
+            )
+        else:
+            lengths = [persona_batch_ids.shape[1] + history_type_ids.shape[1] for el in utterance_batch_list]
+            input_ids = history_token_ids
+            token_type_ids_batch = history_type_ids
+            attention_mask = history_mask
+
+        
+        return input_ids, token_type_ids_batch, lengths, attention_mask
 
     def reset_noise(self):
         pass

@@ -93,7 +93,7 @@ class BertAdversarial(torch.nn.Module):
             torch.cat(hidden_states, dim=0),
         )
 
-    def _build_inputs_dialogs(self, persona, history):
+    def _build_inputs_dialogs(self, dialogs):
         result = []
         persona_batch = [dialog[0] for dialog in dialogs]
         persona_batch_outp = self.tokenizer(

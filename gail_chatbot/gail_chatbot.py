@@ -244,6 +244,7 @@ class GailChatbot(Agent):
                 ) = self.generate_dialogs(
                     dialogs_to_generate[lower:upper], self.gen_episode_num
                 )
+                print("Generated dialogs as seen by decode",generated_dialogs)
                 generated_dialogs = self.decode_reply(generated_dialogs)
                 gen_dialogs_batch.extend(generated_dialogs)
                 scores, logits = self.compute_rewards(
@@ -268,7 +269,7 @@ class GailChatbot(Agent):
     ):
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
-        dialogs = [(*dialog, torch.LongTensor([])) for dialog in dialogs]
+        dialogs = [(*dialog, torch.empty(0, dtype=torch.long)) for dialog in dialogs]
         prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
         for step in range(max_len):
@@ -281,8 +282,11 @@ class GailChatbot(Agent):
                 if done[i]:
                     continue
                 prev_dialog[i] = deepcopy(dialog)
-                new_utterance = torch.cat([dialog[2], ids[i]], dim=0)
-                dialog = (*dialog[:-1], new_utterance)
+                if dialog[2].nelement() != 0:
+                    new_utterance = torch.cat([dialog[2], ids[i]], dim=0)
+                    dialogs[i] = (*dialog[:-1], new_utterance)
+                else:
+                    dialogs[i] = (*dialog[:-1], ids[i].unsqueeze(-1))
                 if ids[i] == self.generator_policy.tokenizer.eos_token_id or (
                     step == (max_len - 1)
                 ):
