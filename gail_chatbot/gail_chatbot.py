@@ -229,32 +229,32 @@ class GailChatbot(Agent):
         return [{"id": self.id} for observation in observations]
 
     def update_generator_(self, dialogs_pos, dialogs_to_generate):
-        self.adversarial.eval()
-        gen_dialogs_batch = []
-        for i in range(
-            (self.batch_size // self.gen_sub_batch_size)
-            + int(self.batch_size % self.gen_sub_batch_size > 0)
-        ):
-            upper = (i + 1) * self.gen_sub_batch_size
-            lower = i * self.gen_sub_batch_size
-            (
-                generated_dialogs,
-                final_transitions,
-                self.gen_episode_num,
-            ) = self.generate_dialogs(
-                dialogs_to_generate[lower:upper], self.gen_episode_num
-            )
-            generated_dialogs = self.decode_reply(generated_dialogs)
-            gen_dialogs_batch.extend(generated_dialogs)
-            scores, logits = self.compute_rewards(
-                generated_dialogs, dialogs_pos[lower:upper]
-            )
-            self.metrics["gen_reward"] = scores.mean()
+        with torch.no_grad():
+            gen_dialogs_batch = []
+            for i in range(
+                (self.batch_size // self.gen_sub_batch_size)
+                + int(self.batch_size % self.gen_sub_batch_size > 0)
+            ):
+                upper = (i + 1) * self.gen_sub_batch_size
+                lower = i * self.gen_sub_batch_size
+                (
+                    generated_dialogs,
+                    final_transitions,
+                    self.gen_episode_num,
+                ) = self.generate_dialogs(
+                    dialogs_to_generate[lower:upper], self.gen_episode_num
+                )
+                generated_dialogs = self.decode_reply(generated_dialogs)
+                gen_dialogs_batch.extend(generated_dialogs)
+                scores, logits = self.compute_rewards(
+                    generated_dialogs, dialogs_pos[lower:upper]
+                )
+                self.metrics["gen_reward"] = scores.mean()
 
-            for i, final_transition in enumerate(final_transitions):
-                if final_transition is not None:
-                    final_transition[2] = scores[i]
-            self.generator.batch_memorize(final_transitions)
+                for i, final_transition in enumerate(final_transitions):
+                    if final_transition is not None:
+                        final_transition[2] = scores[i]
+                self.generator.batch_memorize(final_transitions)
         self.generator_policy.disable_cache()
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
@@ -268,8 +268,8 @@ class GailChatbot(Agent):
     ):
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
-        dialogs = [(*dialog, []) for dialog in dialogs]
-        prev_dialog = [(*dialog, []) for dialog in dialogs]
+        dialogs = [(*dialog, torch.LongTensor([])) for dialog in dialogs]
+        prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
         for step in range(max_len):
             transitions = [None] * len(dialogs)
@@ -277,13 +277,13 @@ class GailChatbot(Agent):
                 break
             actions = self.generator.batch_act(dialogs, done)
             ids = self.generator_policy.decode(actions)
-            words = self.generator_policy.tokenizer.convert_ids_to_tokens(ids)
             for i, dialog in enumerate(dialogs):
                 if done[i]:
                     continue
                 prev_dialog[i] = deepcopy(dialog)
-                dialog[2].append(words[i])
-                if words[i] == self.generator_policy.tokenizer.eos_token or (
+                new_utterance = torch.cat([dialog[2], ids[i]], dim=0)
+                dialog = (*dialog[:-1], new_utterance)
+                if ids[i] == self.generator_policy.tokenizer.eos_token_id or (
                     step == (max_len - 1)
                 ):
                     episode_num += 1
@@ -306,9 +306,9 @@ class GailChatbot(Agent):
     def decode_reply(self, generated_dialogs):
         generated_dialogs_converted = []
         for persona, history, generated in generated_dialogs:
-            reply_str = self.generator_policy.tokenizer.convert_tokens_to_string(
-                generated
-            ).replace(self.generator_policy.tokenizer.eos_token, "")
+            reply_str = self.generator_policy.tokenizer.decode(generated).replace(
+                self.generator_policy.tokenizer.eos_token, ""
+            )
             if reply_str == "":
                 reply_str = "__SILENCE__"
             generated_dialogs_converted.append((persona, history + [reply_str]))

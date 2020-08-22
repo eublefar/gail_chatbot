@@ -8,6 +8,7 @@ from gym_loop.policies.base_policy import BasePolicy
 from contextlib import suppress
 import torch.nn.functional as F
 from torch.distributions import MultivariateNormal
+from torch.nn.utils.rnn import pad_sequence
 
 try:
     from torch.cuda.amp import autocast
@@ -22,6 +23,8 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         torch.nn.Module.__init__(self)
 
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+        self.tokenizer.add_special_tokens({"pad_token": self.tokenizer.eos_token})
+
         self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
         self.loc_transform_layer = torch.nn.Linear(1024, 1024)
         self.std_layer = torch.nn.Sequential(
@@ -77,9 +80,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             state_batch
         )
 
-        input_ids = torch.LongTensor(input_ids).to(self.get_device())
-        token_type_ids = torch.LongTensor(token_type_ids_batch).to(self.get_device())
-        attention_mask = torch.LongTensor(attention_mask).to(self.get_device())
+        input_ids = input_ids.to(self.get_device(), non_blocking=True)
+        token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
+        attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
             last_layer_hidden_states, past_key_values = self.model.transformer(
@@ -88,12 +91,12 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 attention_mask=attention_mask,
                 past=past_key_values,
             )
+            t_seqlen = torch.LongTensor(seqlen)
             last_feature_ids = (
-                (torch.LongTensor(seqlen) - 1)
-                .unsqueeze(-1)
-                .unsqueeze(-1)
+                (t_seqlen.pin_memory() - 1)
+                .view([-1, 1, 1])
                 .expand([-1, -1, last_layer_hidden_states.shape[-1]])
-            ).to(self.get_device())
+            ).to(self.get_device(), non_blocking=True)
             features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
 
             values = self.value_head(features)
@@ -119,64 +122,102 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.use_cache = False
 
     def decode(self, hidden_states):
-        hidden_states = torch.FloatTensor(hidden_states).to(self.get_device())
-        return (
-            torch.argmax(self.model.lm_head(hidden_states), dim=-1)
-            .cpu()
-            .detach()
-            .numpy()
+        return torch.argmax(self.model.lm_head(hidden_states).detach(), dim=-1).cpu(
+            non_blocking=True
         )
 
-    def _build_inputs(self, state_batch: List[Tuple[str, List[str], List[str]]]):
+    def _build_inputs(self, state_batch: List[Tuple[str, List[str], torch.Tensor]]):
         token_type_batch = []
         input_words = []
         seqlen = []
-        for state in state_batch:
-            persona, history, utterance = state
-            if persona:
-                persona_tokens = self.tokenizer.tokenize(persona) + [
-                    self.tokenizer.eos_token
-                ]
-            else:
-                persona_tokens = []
-            input_tokens = []
-            persona_types = [1] * len(persona_tokens)
-            utterance_types = [1] * len(utterance)
-            token_types = []
-            turn_len = []
-            for step_id, turn in enumerate(history):
-                if "__SILENCE__" in turn:
-                    turn = turn.replace("__SILENCE__", self.tokenizer.eos_token)
-                    tokenized = self.tokenizer.tokenize(turn)
-                else:
-                    tokenized = self.tokenizer.tokenize(turn) + [
-                        self.tokenizer.eos_token
-                    ]
-                turn_len.append(len(tokenized))
-                input_tokens += tokenized
-                if step_id % 2 == 0:
-                    token_types += [0] * len(tokenized)
-                else:
-                    token_types += [1] * len(tokenized)
-                if (len(input_tokens) + len(persona_tokens)) >= 512:
-                    first_turn_len = turn_len.pop(0)
-                    input_tokens = input_tokens[first_turn_len:]
-                    token_types = token_types[first_turn_len:]
-            seqlen.append(len(persona_types) + len(token_types) + len(utterance_types))
-            token_type_batch.append(persona_types + token_types + utterance_types)
-            input_words.append(persona_tokens + input_tokens + utterance)
-        max_len = max(seqlen)
-        attention_mask = []
-        for token_type, inp_seq in zip(token_type_batch, input_words):
-            pad_num = max_len - len(token_type)
-            attention_mask.append([1] * len(token_type) + [0] * pad_num)
-            token_type.extend([0] * pad_num)
-            inp_seq.extend([self.tokenizer.eos_token] * pad_num)
-        token_type_ids_batch = [token_type for token_type in token_type_batch]
-        input_ids = [
-            self.tokenizer.convert_tokens_to_ids(input_words_row)
-            for input_words_row in input_words
-        ]
+        utterance_batch_list = [state[2] for state in state_batch]
+        utterance_attention_list = [torch.ones_like(state[2]) for state in state_batch]
+
+        persona_batch = [state[0] for state in state_batch]
+        persona_batch_outp = self.tokenizer(
+            persona_batch,
+            return_tensors="pt",
+            padding=True,
+            pad_to_multiple_of=8,
+            add_special_tokens=True,
+            return_attention_mask=True,
+        )
+        persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
+        persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
+        token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
+
+        history_batch = sum([state[1] for state in state_batch])
+        history_replies_num = [len(state[1]) for state in state_batch]
+        history_batch_outp = self.tokenizer(
+            history_batch,
+            return_tensors="pt",
+            padding=True,
+            pad_to_multiple_of=8,
+            add_special_tokens=True,
+            return_attention_mask=True,
+        )
+        history_batch_ids = history_batch_outp["input_ids"].pin_memory()
+        history_batch_mask = history_batch_outp["attention_mask"].pin_memory()
+
+        history_batch_ids_list = []
+        history_batch_mask_list = []
+        history_batch_token_type_list = []
+        num_sum = 0
+        for num in history_replies_num:
+            history_row_ids = history_batch_ids[num_sum:num, :]
+
+            history_row_ids_flat = history_row_ids.view([-1])
+            history_row_mask = history_batch_mask[num_sum:num, :].view([-1])
+
+            history_batch_ids_list.append(history_row_ids_flat)
+            history_batch_mask_list.append(history_row_mask)
+
+            history_types_ones = torch.ones_like(history_row_ids)
+            history_types_zeros = torch.zeros_like(history_row_ids)
+            history_types = (
+                torch.where(
+                    (torch.arange(0, num) % 2 == 0)
+                    .unsqueeze(-1)
+                    .expand_as(history_row_ids),
+                    history_types_ones,
+                    history_types_zeros,
+                )
+                .pin_memory()
+                .view(-1)
+            )
+
+            history_batch_token_type_list.append(history_types)
+
+        history_token_ids = pad_sequence(
+            history_batch_ids_list,
+            batch_first=True,
+            padding_value=self.tokenizer.eos_token_id,
+        )
+        history_mask = pad_sequence(
+            history_batch_mask_list, batch_first=True, padding_value=0.0
+        )
+        history_type_ids = pad_sequence(
+            history_batch_token_type_list, batch_first=True, padding_value=0.0
+        )
+
+        utterance = pad_sequence(
+            utterance_batch_list,
+            batch_first=True,
+            padding_value=self.tokenizer.eos_token_id,
+        ).pin_memory()
+        utterance_attention = pad_sequence(
+            utterance_attention_list, batch_first=True, padding_value=0,
+        ).pin_memory()
+
+        token_types_utterance = torch.zeros_like(utterance).pin_memory()
+
+        input_ids = torch.cat([persona_batch_ids, history_token_ids, utterances], dim=1)
+        token_type_ids_batch = torch.cat(
+            [token_types_persona, history_type_ids, token_types_utterance], dim=1
+        )
+        attention_mask = torch.cat(
+            [persona_batch_mask, history_mask, utterance_attention], dim=1
+        )
 
         return input_ids, token_type_ids_batch, seqlen, attention_mask
 

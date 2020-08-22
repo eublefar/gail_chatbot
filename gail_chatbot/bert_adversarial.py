@@ -56,12 +56,8 @@ class BertAdversarial(torch.nn.Module):
         labels: torch.LongTensor = None,
         sub_batch: int = 16,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        preprocessed_dialogs = [
-            self._build_inputs_dialogs(persona, history) for persona, history in dialogs
-        ]
-        token_ids, token_type_ids, attention_mask = self._prepare_tensors(
-            preprocessed_dialogs
-        )
+        token_ids, token_type_ids, attention_mask = self._build_inputs_dialogs(dialogs)
+
         loss, logits, hidden_states = [], [], []
         iters = token_ids.shape[0] // sub_batch + int(
             token_ids.shape[0] % sub_batch != 0
@@ -84,8 +80,8 @@ class BertAdversarial(torch.nn.Module):
                     if MIXED_PREC
                     else (outp[0] / iters).backward()
                 )
-                loss.append(outp[0])
-                logits.append(outp[1])
+                loss.append(outp[0].cpu(non_blocking=True))
+                logits.append(outp[1].cpu(non_blocking=True))
                 hidden_states.append(outp[2][-1])
             else:
                 logits.append(outp[0])
@@ -98,40 +94,83 @@ class BertAdversarial(torch.nn.Module):
         )
 
     def _build_inputs_dialogs(self, persona, history):
-        persona = self.tokenizer.tokenize(persona)
-        persona = [[self.tokenizer.cls_token] + persona + [self.tokenizer.sep_token]]
-        history_seq = [
-            self.tokenizer.tokenize(s) + [self.tokenizer.sep_token]
-            for i, s in enumerate(history)
-        ]
-        if len(list(chain(*persona, *history_seq))) >= 512:
-            persona_len = len(persona[0])
-            history_lengths = [len(seq) for seq in history_seq]
-            while (sum(history_lengths) + persona_len) >= 512:
-                history_lengths = history_lengths[1:]
-                history_seq = history_seq[1:]
-        sequence = persona + history_seq
-        words = list(chain(*sequence))
-        segments = [i % 2 for i, s in enumerate(sequence) for _ in s]
-        return words, segments
+        result = []
+        persona_batch = [dialog[0] for dialog in dialogs]
+        persona_batch_outp = self.tokenizer(
+            persona_batch,
+            return_tensors="pt",
+            padding=True,
+            pad_to_multiple_of=8,
+            add_special_tokens=True,
+            return_attention_mask=True,
+        )
+        persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
+        persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
+        token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
 
-    def _prepare_tensors(
-        self, words_segments: List[Tuple[List[str], List[int]]]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        maxlen = max([len(word_seg[0]) for word_seg in words_segments])
-        token_ids = []
-        token_type_ids = []
-        attention_masks = []
-        for words, segments in words_segments:
-            pad_num = maxlen - len(words)
-            attention_masks.append([1] * len(words) + [0] * pad_num)
-            words.extend([self.tokenizer.pad_token] * pad_num)
-            segments.extend([segments[-1]] * pad_num)
-            token_type_ids.append(segments)
-            token_ids.append(self.tokenizer.convert_tokens_to_ids(words))
+        history_batch = [
+            turn + self.tokenizer.sep_token for dialog in dialogs for turn in dialog[1]
+        ]
+        history_reply_num = [len(dialog[1]) for dialog in dialogs]
+        history_batch_outp = self.tokenizer(
+            history_batch,
+            return_tensors="pt",
+            padding=True,
+            pad_to_multiple_of=8,
+            add_special_tokens=False,
+            return_attention_mask=True,
+        ).pin_memory()
+
+        history_batch_ids = history_batch_outp["input_ids"].pin_memory()
+        history_batch_mask = history_batch_outp["attention_mask"].pin_memory()
+
+        history_batch_ids_list = []
+        history_batch_mask_list = []
+        history_batch_token_type_list = []
+        num_sum = 0
+        for num in history_replies_num:
+            history_row_ids = history_batch_ids[num_sum:num, :]
+            history_row_ids_flat = history_row_ids.view([-1])
+            history_row_mask = history_batch_mask[num_sum:num, :].view([-1])
+
+            history_batch_ids_list.append(history_row_ids_flat)
+            history_batch_mask_list.append(history_row_mask)
+
+            history_types_ones = torch.ones_like(history_row_ids)
+            history_types_zeros = torch.zeros_like(history_row_ids)
+            history_types = (
+                torch.where(
+                    (torch.arange(0, num) % 2 == 0)
+                    .unsqueeze(-1)
+                    .expand_as(history_row_ids),
+                    history_types_ones,
+                    history_types_zeros,
+                )
+                .pin_memory()
+                .view(-1)
+            )
+
+            history_batch_token_type_list.append(history_types)
+
+        history_token_ids = pad_sequence(
+            history_batch_ids_list,
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id,
+        )
+        history_mask = pad_sequence(
+            history_batch_mask_list, batch_first=True, padding_value=0.0
+        )
+        history_type_ids = pad_sequence(
+            history_batch_token_type_list, batch_first=True, padding_value=0.0
+        )
+
+        input_ids = torch.cat([persona_batch_ids, history_token_ids, utterances], dim=1)
+        token_type_ids_batch = torch.cat([token_types_persona, history_type_ids], dim=1)
+        attention_mask = torch.cat([persona_batch_mask, history_mask], dim=1)
+
         return (
-            torch.LongTensor(token_ids).to(self.get_device()),
-            torch.LongTensor(token_type_ids).to(self.get_device()),
-            torch.LongTensor(attention_masks).to(self.get_device()),
+            input_ids.to(self.get_device(), non_blocking=False),
+            token_type_ids_batch.to(self.get_device(), non_blocking=False),
+            attention_masks.to(self.get_device(), non_blocking=False),
         )
 
