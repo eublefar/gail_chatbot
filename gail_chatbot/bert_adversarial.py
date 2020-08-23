@@ -6,6 +6,7 @@ from torch.nn.utils import clip_grad_norm_
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from itertools import chain
 from contextlib import suppress
+from torch.nn.utils.rnn import pad_sequence
 
 try:
     from torch.cuda.amp import autocast, GradScaler
@@ -56,7 +57,7 @@ class BertAdversarial(torch.nn.Module):
         labels: torch.LongTensor = None,
         sub_batch: int = 16,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        token_ids, token_type_ids, attention_mask = self._build_inputs_dialogs(dialogs)
+        token_ids, token_type_ids, attention_mask = self._build_inputs(dialogs)
 
         loss, logits, hidden_states = [], [], []
         iters = token_ids.shape[0] // sub_batch + int(
@@ -80,8 +81,8 @@ class BertAdversarial(torch.nn.Module):
                     if MIXED_PREC
                     else (outp[0] / iters).backward()
                 )
-                loss.append(outp[0].cpu(non_blocking=True))
-                logits.append(outp[1].cpu(non_blocking=True))
+                loss.append(outp[0].cpu())
+                logits.append(outp[1].cpu())
                 hidden_states.append(outp[2][-1])
             else:
                 logits.append(outp[0])
@@ -93,7 +94,7 @@ class BertAdversarial(torch.nn.Module):
             torch.cat(hidden_states, dim=0),
         )
 
-    def _build_inputs_dialogs(self, dialogs):
+    def _build_inputs(self, dialogs):
         result = []
         persona_batch = [dialog[0] for dialog in dialogs]
         persona_batch_outp = self.tokenizer(
@@ -111,7 +112,7 @@ class BertAdversarial(torch.nn.Module):
         history_batch = [
             turn + self.tokenizer.sep_token for dialog in dialogs for turn in dialog[1]
         ]
-        history_reply_num = [len(dialog[1]) for dialog in dialogs]
+        history_replies_num = [len(dialog[1]) for dialog in dialogs]
         history_batch_outp = self.tokenizer(
             history_batch,
             return_tensors="pt",
@@ -164,13 +165,13 @@ class BertAdversarial(torch.nn.Module):
             history_batch_token_type_list, batch_first=True, padding_value=0.0
         )
 
-        input_ids = torch.cat([persona_batch_ids, history_token_ids, utterances], dim=1)
+        input_ids = torch.cat([persona_batch_ids, history_token_ids], dim=1)
         token_type_ids_batch = torch.cat([token_types_persona, history_type_ids], dim=1)
         attention_mask = torch.cat([persona_batch_mask, history_mask], dim=1)
 
         return (
             input_ids.to(self.get_device(), non_blocking=False),
             token_type_ids_batch.to(self.get_device(), non_blocking=False),
-            attention_masks.to(self.get_device(), non_blocking=False),
+            attention_mask.to(self.get_device(), non_blocking=False),
         )
 
