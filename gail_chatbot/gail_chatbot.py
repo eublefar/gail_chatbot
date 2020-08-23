@@ -18,7 +18,7 @@ from tensorboardX import SummaryWriter
 import yaml
 import json
 
-# torch.set_num_threads(8)
+torch.set_num_threads(8)
 
 
 class GailChatbot(Agent):
@@ -268,7 +268,11 @@ class GailChatbot(Agent):
     ):
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
-        dialogs = [(*dialog, torch.empty(0, dtype=torch.long)) for dialog in dialogs]
+        dialogs = [(*dialog, torch.empty(
+            0,
+            dtype=torch.long,
+            device=self.generator_policy.get_device()
+        )) for dialog in dialogs]
         prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
         for step in range(max_len):
@@ -452,7 +456,7 @@ class GailChatbot(Agent):
         return dialogs_neg, dialogs_pos, dialogs_to_generate
 
     def __del__(self):
-        self.checkpoint([])
+#         self.checkpoint([])
         self.writer.close()
         super().__del__()
 

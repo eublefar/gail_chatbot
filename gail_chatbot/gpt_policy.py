@@ -82,9 +82,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             state_batch
         )
 
-        input_ids = input_ids.to(self.get_device(), non_blocking=True)
-        token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
-        attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
+        input_ids = input_ids#.to(self.get_device(), non_blocking=True)
+        token_type_ids = token_type_ids_batch#.to(self.get_device(), non_blocking=True)
+        attention_mask = attention_mask#.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
             last_layer_hidden_states, past_key_values = self.model.transformer(
@@ -101,17 +101,19 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             ).to(self.get_device(), non_blocking=True)
             features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
             values = self.value_head(features)
-
             means = features + self.loc_transform_layer(features)
             stds = F.relu(self.std_layer(features))
-        stds = stds.float() + 1e-10
+        stds = stds + 1e-5
 
         if self.use_cache:
             self.cache = past_key_values
+        
+        diag_emb = stds.diag_embed()
+        distr = MultivariateNormal(
+                means, diag_emb
+            )
         return {
-            "action_distribution": MultivariateNormal(
-                means.float(), stds.diag_embed(), validate_args=True
-            ),
+            "action_distribution": distr,
             "values": values.squeeze(-1),
         }
 
@@ -123,8 +125,10 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.use_cache = False
 
     def decode(self, hidden_states):
-        return torch.argmax(self.model.lm_head(hidden_states).detach(), dim=-1).to(
-            "cpu", non_blocking=True
+        return torch.argmax(
+            self.model.lm_head(
+                hidden_states
+            ).detach(), dim=-1
         )
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], torch.Tensor]]):
@@ -257,22 +261,29 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 utterance_batch_list,
                 batch_first=True,
                 padding_value=self.tokenizer.eos_token_id,
-            ).pin_memory()
+            )#.pin_memory()
             utterance_attention = pad_sequence(
                 utterance_attention_list, batch_first=True, padding_value=0,
-            ).pin_memory()
-            token_types_utterance = torch.zeros_like(utterance).pin_memory()
-
-            input_ids = torch.cat([history_token_ids, utterance], dim=1)
-            token_type_ids_batch = torch.cat(
-                [history_type_ids, token_types_utterance], dim=1
             )
-            attention_mask = torch.cat([history_mask, utterance_attention], dim=1)
+            token_types_utterance = torch.zeros_like(utterance)
+
+            input_ids = torch.cat([
+                history_token_ids.to(self.get_device(), non_blocking=True),
+                utterance
+            ], dim=1)
+            token_type_ids_batch = torch.cat(
+                [history_type_ids.to(self.get_device(), non_blocking=True), token_types_utterance],
+                dim=1
+            )
+            attention_mask = torch.cat([
+                history_mask.to(self.get_device(), non_blocking=True),
+                utterance_attention
+            ], dim=1)
         else:
             lengths = [history_type_ids.shape[1] for el in utterance_batch_list]
-            input_ids = history_token_ids
-            token_type_ids_batch = history_type_ids
-            attention_mask = history_mask
+            input_ids = history_token_ids.to(self.get_device(), non_blocking=True)
+            token_type_ids_batch = history_type_ids.to(self.get_device(), non_blocking=True)
+            attention_mask = history_mask.to(self.get_device(), non_blocking=True)
 
         return (input_ids, attention_mask, token_type_ids_batch, lengths)
 

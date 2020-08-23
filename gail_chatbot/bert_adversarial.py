@@ -120,7 +120,7 @@ class BertAdversarial(torch.nn.Module):
             pad_to_multiple_of=8,
             add_special_tokens=False,
             return_attention_mask=True,
-        ).pin_memory()
+        )
 
         history_batch_ids = history_batch_outp["input_ids"].pin_memory()
         history_batch_mask = history_batch_outp["attention_mask"].pin_memory()
