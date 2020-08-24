@@ -57,7 +57,9 @@ class BertAdversarial(torch.nn.Module):
         labels: torch.LongTensor = None,
         sub_batch: int = 16,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        token_ids, token_type_ids, attention_mask = self._build_inputs(dialogs)
+        token_ids, token_type_ids, attention_mask, position_ids = self._build_inputs(
+            dialogs
+        )
 
         loss, logits, hidden_states = [], [], []
         iters = token_ids.shape[0] // sub_batch + int(
@@ -67,19 +69,21 @@ class BertAdversarial(torch.nn.Module):
             lower = i * sub_batch
             upper = (i + 1) * sub_batch
             with autocast() if MIXED_PREC else suppress():
-                ids = token_ids[lower:upper]
-                mask = attention_mask[lower:upper]
-                types = token_type_ids[lower:upper]
-                if 0 in list(ids.shape) or 0 in list(mask.shape) or 0 in list(types.shape):
-                    print("Shapes sub", ids.shape, mask.shape, types.shape)
-                    print("Shapes", token_ids.shape, token_type_ids.shape, attention_mask.shape)
-                    print("Dialogs", dialogs)
-                    raise ValueError("Empty sub batch")
-                    
+                ids = token_ids[lower:upper].to(self.get_device(), non_blocking=False)
+                mask = attention_mask[lower:upper].to(
+                    self.get_device(), non_blocking=False
+                )
+                types = token_type_ids[lower:upper].to(
+                    self.get_device(), non_blocking=False
+                )
+                positions = position_ids[lower:upper].to(
+                    self.get_device(), non_blocking=False
+                )
                 outp = self.model(
                     input_ids=ids,
                     attention_mask=mask,
                     token_type_ids=types,
+                    position_ids=positions,
                     labels=labels[lower:upper] if labels is not None else None,
                     output_hidden_states=True,
                 )
@@ -101,7 +105,7 @@ class BertAdversarial(torch.nn.Module):
         return (
             *([torch.stack(loss).mean()] if labels is not None else []),
             torch.cat(logits, dim=0),
-#             torch.cat(hidden_states, dim=0),
+            #             torch.cat(hidden_states, dim=0),
         )
 
     def _build_inputs(self, dialogs):
@@ -162,6 +166,7 @@ class BertAdversarial(torch.nn.Module):
             )
 
             history_batch_token_type_list.append(history_types)
+            num_sum += num
 
         history_token_ids = pad_sequence(
             history_batch_ids_list,
@@ -180,8 +185,9 @@ class BertAdversarial(torch.nn.Module):
         attention_mask = torch.cat([persona_batch_mask, history_mask], dim=1)
 
         return (
-            input_ids.to(self.get_device(), non_blocking=False),
-            token_type_ids_batch.to(self.get_device(), non_blocking=False),
-            attention_mask.to(self.get_device(), non_blocking=False),
+            input_ids,
+            token_type_ids_batch,
+            attention_mask,
+            attention_mask.cumsum(dim=1) - 1,
         )
 
