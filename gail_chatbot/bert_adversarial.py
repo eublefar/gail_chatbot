@@ -61,16 +61,25 @@ class BertAdversarial(torch.nn.Module):
 
         loss, logits, hidden_states = [], [], []
         iters = token_ids.shape[0] // sub_batch + int(
-            token_ids.shape[0] % sub_batch != 0
+            (token_ids.shape[0] % sub_batch) != 0
         )
         for i in range(iters):
             lower = i * sub_batch
             upper = (i + 1) * sub_batch
             with autocast() if MIXED_PREC else suppress():
+                ids = token_ids[lower:upper]
+                mask = attention_mask[lower:upper]
+                types = token_type_ids[lower:upper]
+                if 0 in list(ids.shape) or 0 in list(mask.shape) or 0 in list(types.shape):
+                    print("Shapes sub", ids.shape, mask.shape, types.shape)
+                    print("Shapes", token_ids.shape, token_type_ids.shape, attention_mask.shape)
+                    print("Dialogs", dialogs)
+                    raise ValueError("Empty sub batch")
+                    
                 outp = self.model(
-                    input_ids=token_ids[lower:upper],
-                    attention_mask=attention_mask[lower:upper],
-                    token_type_ids=token_type_ids[lower:upper],
+                    input_ids=ids,
+                    attention_mask=mask,
+                    token_type_ids=types,
                     labels=labels[lower:upper] if labels is not None else None,
                     output_hidden_states=True,
                 )
@@ -87,11 +96,12 @@ class BertAdversarial(torch.nn.Module):
             else:
                 logits.append(outp[0].detach())
                 hidden_states.append(outp[1][-1].detach())
+            del outp
 
         return (
             *([torch.stack(loss).mean()] if labels is not None else []),
             torch.cat(logits, dim=0),
-            torch.cat(hidden_states, dim=0),
+#             torch.cat(hidden_states, dim=0),
         )
 
     def _build_inputs(self, dialogs):

@@ -255,10 +255,11 @@ class GailChatbot(Agent):
                     if final_transition is not None:
                         final_transition[2] = scores[i]
                 self.generator.batch_memorize(final_transitions)
+#         torch.cuda.empty_cache()
         self.generator_policy.disable_cache()
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
-        torch.cuda.empty_cache()
+#         torch.cuda.empty_cache()
         return gen_dialogs_batch
 
     def generate_dialogs(
@@ -280,7 +281,7 @@ class GailChatbot(Agent):
             transitions = [None] * len(dialogs)
             if done.all():
                 break
-            actions = self.generator.batch_act(dialogs, done)
+            actions = self.generator.batch_act(dialogs, done).detach()
             ids = self.generator_policy.decode(actions)
             actions_cpu = actions.to('cpu', non_blocking=True)
             for i, dialog in enumerate(dialogs):
@@ -309,6 +310,7 @@ class GailChatbot(Agent):
                     global_step += 1
             if not all(final_transitions):
                 self.generator.batch_memorize(transitions)
+            del actions, ids, actions_cpu, transitions
         self.generator_policy.clear_cache()
         return dialogs, final_transitions, episode_num
 
@@ -329,7 +331,7 @@ class GailChatbot(Agent):
             *(dialogs_gen if self.update_generator else []),
         ]
 
-        logits, hidden_states = self.adversarial(X, sub_batch=self.gen_sub_batch_size)
+        (logits,) = self.adversarial(X, sub_batch=self.gen_sub_batch_size)
 
         probs = torch.softmax(logits, dim=-1)
 
@@ -338,17 +340,17 @@ class GailChatbot(Agent):
 
         adequacy_scores = probs[-len(dialogs_gen) :, 1]
 
-        positive_embs = hidden_states[: len(dialogs_pos), 0, :]
-        generated_embs = hidden_states[-len(dialogs_gen) :, 0, :]
-        next_sentence_similarity_scores = torch.nn.functional.cosine_similarity(
-            positive_embs, generated_embs, dim=-1
-        )
+#         positive_embs = hidden_states[: len(dialogs_pos), 0, :]
+#         generated_embs = hidden_states[-len(dialogs_gen) :, 0, :]
+#         next_sentence_similarity_scores = torch.nn.functional.cosine_similarity(
+#             positive_embs, generated_embs, dim=-1
+#         )
 
-        self.metrics[
-            "next_sentence_similarity_scores"
-        ] = next_sentence_similarity_scores.mean()
+#         self.metrics[
+#             "next_sentence_similarity_scores"
+#         ] = next_sentence_similarity_scores.mean()
         reward_scores = (
-            (adequacy_scores + self.similarity_coef * next_sentence_similarity_scores)
+            adequacy_scores
             .cpu()
             .detach()
             .numpy()
@@ -384,7 +386,7 @@ class GailChatbot(Agent):
             )
         )
 
-        loss, logits, hidden_states = self.adversarial(
+        loss, logits = self.adversarial(
             X, y, sub_batch=self.adv_sub_batch_size
         )
         probs = torch.softmax(logits.float(), dim=-1).detach()
@@ -402,7 +404,7 @@ class GailChatbot(Agent):
         else:
             self.adversarial.optimizer.step()
         self.adversarial.optimizer.zero_grad()
-        torch.cuda.empty_cache()
+#         torch.cuda.empty_cache()
 
     def write_metrics(self):
         metrics = self.generator.metrics(
