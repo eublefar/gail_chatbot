@@ -103,14 +103,14 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             values = self.value_head(features)
             means = features + self.loc_transform_layer(features)
             stds = F.relu(self.std_layer(features))
-        stds = stds + 1e-5
+        stds = stds.float() + 1e-10
 
         if self.use_cache:
             self.cache = past_key_values
         
         diag_emb = stds.diag_embed()
         distr = MultivariateNormal(
-                means, diag_emb
+                means.float(), diag_emb
             )
         return {
             "action_distribution": distr,

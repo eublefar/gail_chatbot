@@ -385,7 +385,7 @@ class GailChatbot(Agent):
         loss, logits, hidden_states = self.adversarial(
             X, y, sub_batch=self.adv_sub_batch_size
         )
-        probs = torch.softmax(logits, dim=-1)
+        probs = torch.softmax(logits.float(), dim=-1)
         self.metrics["pos_logits"] = probs[
             len(dialogs_neg) : len(dialogs_neg) + len(dialogs_pos), 1
         ].mean()
