@@ -81,12 +81,12 @@ class BertAdversarial(torch.nn.Module):
                     if MIXED_PREC
                     else (outp[0] / iters).backward()
                 )
-                loss.append(outp[0].cpu())
-                logits.append(outp[1].cpu())
-                hidden_states.append(outp[2][-1])
+                loss.append(outp[0].cpu().detach())
+                logits.append(outp[1].cpu().detach())
+                hidden_states.append(outp[2][-1].detach())
             else:
-                logits.append(outp[0])
-                hidden_states.append(outp[1][-1])
+                logits.append(outp[0].detach())
+                hidden_states.append(outp[1][-1].detach())
 
         return (
             *([torch.stack(loss).mean()] if labels is not None else []),

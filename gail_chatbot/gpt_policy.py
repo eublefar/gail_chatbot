@@ -82,9 +82,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             state_batch
         )
 
-        input_ids = input_ids#.to(self.get_device(), non_blocking=True)
-        token_type_ids = token_type_ids_batch#.to(self.get_device(), non_blocking=True)
-        attention_mask = attention_mask#.to(self.get_device(), non_blocking=True)
+        input_ids = input_ids.to(self.get_device(), non_blocking=True)
+        token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
+        attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
             last_layer_hidden_states, past_key_values = self.model.transformer(
@@ -129,7 +129,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             self.model.lm_head(
                 hidden_states
             ).detach(), dim=-1
-        )
+        ).to('cpu', non_blocking=True)
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], torch.Tensor]]):
         token_type_batch = []
@@ -268,22 +268,23 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             token_types_utterance = torch.zeros_like(utterance)
 
             input_ids = torch.cat([
-                history_token_ids.to(self.get_device(), non_blocking=True),
+                history_token_ids, #.to(self.get_device(), non_blocking=True),
                 utterance
-            ], dim=1)
+            ], dim=1).pin_memory()
             token_type_ids_batch = torch.cat(
-                [history_type_ids.to(self.get_device(), non_blocking=True), token_types_utterance],
+                [history_type_ids, #.to(self.get_device(), non_blocking=True),
+                 token_types_utterance],
                 dim=1
-            )
+            ).pin_memory()
             attention_mask = torch.cat([
-                history_mask.to(self.get_device(), non_blocking=True),
+                history_mask, #.to(self.get_device(), non_blocking=True),
                 utterance_attention
-            ], dim=1)
+            ], dim=1).pin_memory()
         else:
             lengths = [history_type_ids.shape[1] for el in utterance_batch_list]
-            input_ids = history_token_ids.to(self.get_device(), non_blocking=True)
-            token_type_ids_batch = history_type_ids.to(self.get_device(), non_blocking=True)
-            attention_mask = history_mask.to(self.get_device(), non_blocking=True)
+            input_ids = history_token_ids.pin_memory() #.to(self.get_device(), non_blocking=True)
+            token_type_ids_batch = history_type_ids.pin_memory() #.to(self.get_device(), non_blocking=True)
+            attention_mask = history_mask.pin_memory() #.to(self.get_device(), non_blocking=True)
 
         return (input_ids, attention_mask, token_type_ids_batch, lengths)
 

@@ -258,6 +258,7 @@ class GailChatbot(Agent):
         self.generator_policy.disable_cache()
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
+        torch.cuda.empty_cache()
         return gen_dialogs_batch
 
     def generate_dialogs(
@@ -271,7 +272,7 @@ class GailChatbot(Agent):
         dialogs = [(*dialog, torch.empty(
             0,
             dtype=torch.long,
-            device=self.generator_policy.get_device()
+#             device=self.generator_policy.get_device()
         )) for dialog in dialogs]
         prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
@@ -281,6 +282,7 @@ class GailChatbot(Agent):
                 break
             actions = self.generator.batch_act(dialogs, done)
             ids = self.generator_policy.decode(actions)
+            actions_cpu = actions.to('cpu', non_blocking=True)
             for i, dialog in enumerate(dialogs):
                 if done[i]:
                     continue
@@ -297,13 +299,13 @@ class GailChatbot(Agent):
                     done[i] = True
                     final_transitions[i] = [
                         prev_dialog[i],
-                        actions[i],
+                        actions_cpu[i],
                         0,
                         done[i],
                         dialog,
                     ]
                 else:
-                    transitions[i] = [prev_dialog[i], actions[i], 0, done[i], dialog]
+                    transitions[i] = [prev_dialog[i], actions_cpu[i], 0, done[i], dialog]
                     global_step += 1
             if not all(final_transitions):
                 self.generator.batch_memorize(transitions)
@@ -385,7 +387,7 @@ class GailChatbot(Agent):
         loss, logits, hidden_states = self.adversarial(
             X, y, sub_batch=self.adv_sub_batch_size
         )
-        probs = torch.softmax(logits.float(), dim=-1)
+        probs = torch.softmax(logits.float(), dim=-1).detach()
         self.metrics["pos_logits"] = probs[
             len(dialogs_neg) : len(dialogs_neg) + len(dialogs_pos), 1
         ].mean()
@@ -400,6 +402,7 @@ class GailChatbot(Agent):
         else:
             self.adversarial.optimizer.step()
         self.adversarial.optimizer.zero_grad()
+        torch.cuda.empty_cache()
 
     def write_metrics(self):
         metrics = self.generator.metrics(
