@@ -246,7 +246,8 @@ class GailChatbot(Agent):
                 )
                 generated_dialogs = self.decode_reply(generated_dialogs)
                 gen_dialogs_batch.extend(generated_dialogs)
-                scores, logits = self.compute_rewards(
+#                 torch.cuda.empty_cache()
+                scores = self.compute_rewards(
                     generated_dialogs, dialogs_pos[lower:upper]
                 )
                 self.metrics["gen_reward"] = scores.mean()
@@ -259,7 +260,7 @@ class GailChatbot(Agent):
         self.generator_policy.disable_cache()
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
-#         torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
         return gen_dialogs_batch
 
     def generate_dialogs(
@@ -332,7 +333,7 @@ class GailChatbot(Agent):
         ]
 
         (logits,) = self.adversarial(X, sub_batch=self.gen_sub_batch_size)
-
+        logits = logits.cpu().float().detach()
         probs = torch.softmax(logits, dim=-1)
 
         self.metrics["pos_logits_predict"] = probs[: len(dialogs_pos), 1].mean()
@@ -357,22 +358,23 @@ class GailChatbot(Agent):
         )
 
         self.adversarial.train()
-        return (np.asarray(reward_scores), logits)
+        return np.asarray(reward_scores)
 
     def update_adversarial_(self, dialogs_neg, dialogs_pos, gen_dialogs_batch):
         self.adversarial.train()
+        dialog_neg=[]
         X = [
-            *dialogs_neg,
+#             *dialogs_neg,
             *dialogs_pos,
             *gen_dialogs_batch,
         ]
         y = torch.cat(
             (
-                torch.zeros(
-                    size=[len(dialogs_neg),],
-                    dtype=torch.long,
-                    device=self.adversarial.get_device(),
-                ),
+#                 torch.zeros(
+#                     size=[len(dialogs_neg),],
+#                     dtype=torch.long,
+#                     device=self.adversarial.get_device(),
+#                 ),
                 torch.ones(
                     size=[len(dialogs_pos),],
                     dtype=torch.long,
@@ -404,7 +406,7 @@ class GailChatbot(Agent):
         else:
             self.adversarial.optimizer.step()
         self.adversarial.optimizer.zero_grad()
-#         torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
 
     def write_metrics(self):
         metrics = self.generator.metrics(

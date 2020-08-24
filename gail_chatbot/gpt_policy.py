@@ -22,18 +22,18 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def __init__(self, *args, **kwargs):
         torch.nn.Module.__init__(self)
 
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-small")
         self.tokenizer.add_special_tokens({"pad_token": self.tokenizer.eos_token})
 
-        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
-        self.loc_transform_layer = torch.nn.Linear(1024, 1024)
+        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-small")
+        self.loc_transform_layer = torch.nn.Linear(768, 768)
         self.std_layer = torch.nn.Sequential(
-            torch.nn.Linear(1024, 1024),
+            torch.nn.Linear(768, 768),
             torch.nn.ReLU(True),
-            torch.nn.Linear(1024, 1024),
+            torch.nn.Linear(768, 768),
         )
 
-        self.value_head = torch.nn.Linear(1024, 1)
+        self.value_head = torch.nn.Linear(768, 1)
         self.cache = None
         self.use_cache = True
 
@@ -164,7 +164,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 persona_batch,
                 return_tensors="pt",
                 padding=True,
-                pad_to_multiple_of=8,
+                pad_to_multiple_of=1,
                 add_special_tokens=True,
                 return_attention_mask=True,
                 return_length=True,
@@ -180,12 +180,14 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
     def _append_history_batch(self, tensor_tuple, history_batch, history_replies_num):
         (persona_batch_ids, persona_batch_mask, token_types_persona,) = tensor_tuple
+        
+        persona_sizes = persona_batch_mask.sum(dim=1)
         if history_batch:
             history_batch_outp = self.tokenizer(
                 history_batch,
                 return_tensors="pt",
                 padding=True,
-                pad_to_multiple_of=8,
+                pad_to_multiple_of=1,
                 add_special_tokens=True,
                 return_attention_mask=True,
             )
@@ -197,7 +199,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 history_mask,
                 history_type_ids,
             ) = self._format_history_tensors(
-                history_batch_ids, history_batch_mask, history_replies_num
+                history_batch_ids, history_batch_mask, history_replies_num, persona_sizes
             )
 
             history_token_ids = torch.cat([persona_batch_ids, history_token_ids], dim=1)
@@ -211,17 +213,27 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         return history_token_ids, history_mask, history_type_ids
 
     def _format_history_tensors(
-        self, history_batch_ids, history_batch_mask, history_replies_num
+        self, history_batch_ids, history_batch_mask, history_replies_num, persona_sizes
     ):
         history_batch_ids_list = []
         history_batch_mask_list = []
         history_batch_token_type_list = []
         num_sum = 0
-        for num in history_replies_num:
-            history_row_ids = history_batch_ids[num_sum:num, :]
+        for i, num in enumerate(history_replies_num):
+            history_row_ids = history_batch_ids[num_sum: num_sum + num, :]
 
             history_row_ids_flat = history_row_ids.view([-1])
-            history_row_mask = history_batch_mask[num_sum:num, :].view([-1])
+            history_row_mask = history_batch_mask[num_sum: num_sum + num, :].view([-1])
+            
+            history_size = history_row_mask.sum()
+
+            while (history_size + persona_sizes[i]) > 400:
+                num_sum += 1
+                num -= 1
+                history_row_ids = history_batch_ids[num_sum:num_sum + num, :]
+                history_row_ids_flat = history_row_ids.view([-1])
+                history_row_mask = history_batch_mask[num_sum:num_sum + num, :].view([-1])
+                history_size = history_row_mask.sum()
 
             history_batch_ids_list.append(history_row_ids_flat)
             history_batch_mask_list.append(history_row_mask)

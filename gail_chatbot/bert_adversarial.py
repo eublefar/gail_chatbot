@@ -87,6 +87,7 @@ class BertAdversarial(torch.nn.Module):
                     labels=labels[lower:upper] if labels is not None else None,
                     output_hidden_states=True,
                 )
+                del ids, mask, types, positions
             if labels is not None:
 
                 (
@@ -96,10 +97,10 @@ class BertAdversarial(torch.nn.Module):
                 )
                 loss.append(outp[0].cpu().detach())
                 logits.append(outp[1].cpu().detach())
-                hidden_states.append(outp[2][-1].detach())
+#                 hidden_states.append(outp[2][-1].detach())
             else:
-                logits.append(outp[0].detach())
-                hidden_states.append(outp[1][-1].detach())
+                logits.append(outp[0].cpu().detach())
+#                 hidden_states.append(outp[1][-1].cpu().detach())
             del outp
 
         return (
@@ -115,13 +116,14 @@ class BertAdversarial(torch.nn.Module):
             persona_batch,
             return_tensors="pt",
             padding=True,
-            pad_to_multiple_of=8,
+            pad_to_multiple_of=1,
             add_special_tokens=True,
             return_attention_mask=True,
         )
         persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
         persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
         token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
+        persona_sizes = persona_batch_mask.sum(dim=1)
 
         history_batch = [
             turn + self.tokenizer.sep_token for dialog in dialogs for turn in dialog[1]
@@ -131,7 +133,7 @@ class BertAdversarial(torch.nn.Module):
             history_batch,
             return_tensors="pt",
             padding=True,
-            pad_to_multiple_of=8,
+            pad_to_multiple_of=1,
             add_special_tokens=False,
             return_attention_mask=True,
         )
@@ -143,27 +145,41 @@ class BertAdversarial(torch.nn.Module):
         history_batch_mask_list = []
         history_batch_token_type_list = []
         num_sum = 0
-        for num in history_replies_num:
-            history_row_ids = history_batch_ids[num_sum:num, :]
+        for i, num in enumerate(history_replies_num):
+            history_row_ids = history_batch_ids[num_sum: num_sum + num, :]
             history_row_ids_flat = history_row_ids.view([-1])
-            history_row_mask = history_batch_mask[num_sum:num, :].view([-1])
+            history_row_mask = history_batch_mask[num_sum:num_sum + num, :].view([-1])
+            
+            history_size = history_row_mask.sum()
+
+            while (history_size + persona_sizes[i]) > 400:
+                num_sum += 1
+                num -= 1
+                history_row_ids = history_batch_ids[num_sum: num_sum + num, :]
+                history_row_ids_flat = history_row_ids.view([-1])
+                history_row_mask = history_batch_mask[num_sum: num_sum + num, :].view([-1])
+                history_size = history_row_mask.sum()
 
             history_batch_ids_list.append(history_row_ids_flat)
             history_batch_mask_list.append(history_row_mask)
 
             history_types_ones = torch.ones_like(history_row_ids)
             history_types_zeros = torch.zeros_like(history_row_ids)
-            history_types = (
-                torch.where(
-                    (torch.arange(0, num) % 2 == 0)
-                    .unsqueeze(-1)
-                    .expand_as(history_row_ids),
-                    history_types_ones,
-                    history_types_zeros,
+            try:
+                history_types = (
+                    torch.where(
+                        (torch.arange(0, num) % 2 == 0)
+                        .unsqueeze(-1)
+                        .expand_as(history_row_ids),
+                        history_types_ones,
+                        history_types_zeros,
+                    )
+                    .pin_memory()
+                    .view(-1)
                 )
-                .pin_memory()
-                .view(-1)
-            )
+            except Exception as e:
+                print(num)
+                print(num_sum)
 
             history_batch_token_type_list.append(history_types)
             num_sum += num
