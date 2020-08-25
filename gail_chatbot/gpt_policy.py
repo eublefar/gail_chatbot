@@ -76,6 +76,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 print(self.use_cache)
                 print(past_key_values)
                 print(state_batch)
+                raise e
 
         (
             input_ids,
@@ -85,8 +86,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             position_ids,
         ) = self._build_inputs(state_batch)
 
-        
-        
         print("GPT ", input_ids.shape)
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
         token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
@@ -174,12 +173,15 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 return_length=True,
             )
             persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
-            persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
+            persona_batch_mask = (
+                persona_batch_outp["attention_mask"].bool().pin_memory()
+            )
             token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
         else:
             persona_batch_ids = torch.empty(len(persona_batch), 0, dtype=torch.long)
             persona_batch_mask = torch.empty(len(persona_batch), 0, dtype=torch.long)
             token_types_persona = torch.empty(len(persona_batch), 0, dtype=torch.long)
+
         return persona_batch_ids, persona_batch_mask, token_types_persona
 
     def _append_history_batch(self, tensor_tuple, history_batch, history_replies_num):
@@ -187,6 +189,15 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         persona_sizes = persona_batch_mask.sum(dim=1)
         if history_batch:
+
+            persona_batch_list = [
+                persona[persona_batch_mask[i]]
+                for i, persona in enumerate(persona_batch_ids)
+            ]
+            token_types_persona_list = [
+                torch.zeros_like(persona) for persona in persona_batch_list.pin_memory()
+            ]
+
             history_batch_outp = self.tokenizer(
                 history_batch,
                 return_tensors="pt",
@@ -196,7 +207,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 return_attention_mask=True,
             )
             history_batch_ids = history_batch_outp["input_ids"].pin_memory()
-            history_batch_mask = history_batch_outp["attention_mask"].pin_memory()
+            history_batch_mask = (
+                history_batch_outp["attention_mask"].bool().pin_memory()
+            )
 
             (
                 history_token_ids,
@@ -206,12 +219,14 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 history_batch_ids,
                 history_batch_mask,
                 history_replies_num,
+                persona_batch_list,
                 persona_sizes,
+                token_types_persona_list,
             )
 
-            history_token_ids = torch.cat([persona_batch_ids, history_token_ids], dim=1)
-            history_mask = torch.cat([persona_batch_mask, history_mask], dim=1)
-            history_type_ids = torch.cat([token_types_persona, history_type_ids], dim=1)
+            # history_token_ids = torch.cat([persona_batch_ids, history_token_ids], dim=1)
+            # history_mask = torch.cat([persona_batch_mask, history_mask], dim=1)
+            # history_type_ids = torch.cat([token_types_persona, history_type_ids], dim=1)
         else:
             history_token_ids = persona_batch_ids
             history_mask = persona_batch_mask
@@ -220,7 +235,13 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         return history_token_ids, history_mask, history_type_ids
 
     def _format_history_tensors(
-        self, history_batch_ids, history_batch_mask, history_replies_num, persona_sizes
+        self,
+        history_batch_ids,
+        history_batch_mask,
+        history_replies_num,
+        persona_batch_list,
+        persona_sizes,
+        token_types_persona_list,
     ):
         history_batch_ids_list = []
         history_batch_mask_list = []
@@ -228,24 +249,25 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         num_sum = 0
         for i, num in enumerate(history_replies_num):
             history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
-
-            history_row_ids_flat = history_row_ids.view([-1])
             history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view([-1])
+            history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
 
             history_size = history_row_mask.sum()
 
             while (history_size + persona_sizes[i]) > 400:
                 num_sum += 1
                 num -= 1
-                history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
-                history_row_ids_flat = history_row_ids.view([-1])
                 history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view(
                     [-1]
                 )
+                history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
+                history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
                 history_size = history_row_mask.sum()
 
-            history_batch_ids_list.append(history_row_ids_flat)
-            history_batch_mask_list.append(history_row_mask)
+            history_batch_ids_list.append(
+                torch.cat([persona_batch_list[i], history_row_ids_flat])
+            )
+            history_batch_mask_list.append(torch.ones_like(history_batch_ids_list[i]))
 
             history_types_ones = torch.ones_like(history_row_ids)
             history_types_zeros = torch.zeros_like(history_row_ids)
@@ -260,7 +282,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                     )
                     .pin_memory()
                     .view(-1)
-                )
+                )[history_row_mask]
             except Exception as e:
                 print(num)
                 print(num_sum)
@@ -268,7 +290,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 print(history_batch_ids.shape)
                 raise e
 
-            history_batch_token_type_list.append(history_types)
+            history_batch_token_type_list.append(
+                torch.cat([token_types_persona_list[i], history_types])
+            )
             num_sum += num
 
         history_token_ids = pad_sequence(
@@ -298,7 +322,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 utterance_batch_list,
                 batch_first=True,
                 padding_value=self.tokenizer.eos_token_id,
-            )  # .pin_memory()
+            ).pin_memory()
             utterance_attention = pad_sequence(
                 utterance_attention_list, batch_first=True, padding_value=0,
             )

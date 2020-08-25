@@ -122,14 +122,13 @@ class BertAdversarial(torch.nn.Module):
             return_attention_mask=True,
         )
         persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
-        persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
+        persona_batch_mask = persona_batch_outp["attention_mask"].bool().pin_memory()
         persona_batch_list = [
             persona[persona_batch_mask[i]]
             for i, persona in enumerate(persona_batch_ids)
         ]
         token_types_persona_list = [
-            torch.zeros_like(persona).pin_memory()
-            for persona in persona_batch_list
+            torch.zeros_like(persona) for persona in persona_batch_list.pin_memory()
         ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 
@@ -147,7 +146,7 @@ class BertAdversarial(torch.nn.Module):
         )
 
         history_batch_ids = history_batch_outp["input_ids"].pin_memory()
-        history_batch_mask = history_batch_outp["attention_mask"].pin_memory()
+        history_batch_mask = history_batch_outp["attention_mask"].bool().pin_memory()
 
         history_batch_ids_list = []
         history_batch_mask_list = []
@@ -155,8 +154,8 @@ class BertAdversarial(torch.nn.Module):
         num_sum = 0
         for i, num in enumerate(history_replies_num):
             history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
-            history_row_ids_flat = history_row_ids.view([-1])
             history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view([-1])
+            history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
 
             history_size = history_row_mask.sum()
 
@@ -164,38 +163,34 @@ class BertAdversarial(torch.nn.Module):
                 num_sum += 1
                 num -= 1
                 history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
-                history_row_ids_flat = history_row_ids.view([-1])
                 history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view(
                     [-1]
                 )
+                history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
                 history_size = history_row_mask.sum()
+
             history_batch_ids_list.append(
                 torch.cat([persona_batch_list[i], history_row_ids_flat])
             )
-            history_batch_mask_list.append(
-                torch.cat([torch.ones_like(persona_batch_list[i]), history_row_mask])
-            )
+            history_batch_mask_list.append(torch.ones_like(history_batch_ids_list[i]))
 
             history_types_ones = torch.ones_like(history_row_ids)
             history_types_zeros = torch.zeros_like(history_row_ids)
-            try:
-                history_types = (
-                    torch.where(
-                        (torch.arange(0, num) % 2 == 0)
-                        .unsqueeze(-1)
-                        .expand_as(history_row_ids),
-                        history_types_ones,
-                        history_types_zeros,
-                    )
-                    .pin_memory()
-                    .view(-1)
+            history_types = (
+                torch.where(
+                    (torch.arange(0, num) % 2 == 0)
+                    .unsqueeze(-1)
+                    .expand_as(history_row_ids),
+                    history_types_ones,
+                    history_types_zeros,
                 )
-            except Exception as e:
-                print(num)
-                print(num_sum)
-                raise e
+                .pin_memory()
+                .view(-1)
+            )[history_row_mask]
 
-            history_batch_token_type_list.append(history_types)
+            history_batch_token_type_list.append(
+                torch.cat([token_types_persona_list[i], history_types])
+            )
             num_sum += num
 
         history_token_ids = pad_sequence(
@@ -210,14 +205,10 @@ class BertAdversarial(torch.nn.Module):
             history_batch_token_type_list, batch_first=True, padding_value=0.0
         )
 
-        input_ids = torch.cat([persona_batch_ids, history_token_ids], dim=1)
-        token_type_ids_batch = torch.cat([token_types_persona, history_type_ids], dim=1)
-        attention_mask = torch.cat([persona_batch_mask, history_mask], dim=1)
-
         return (
-            input_ids,
-            token_type_ids_batch,
-            attention_mask,
-            attention_mask.cumsum(dim=1) - 1,
+            history_token_ids,
+            history_type_ids,
+            history_mask,
+            history_mask.cumsum(dim=1) - 1,
         )
 
