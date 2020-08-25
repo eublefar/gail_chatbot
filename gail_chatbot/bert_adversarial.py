@@ -61,6 +61,7 @@ class BertAdversarial(torch.nn.Module):
             dialogs
         )
 
+        print("Bert ", token_ids.shape)
         loss, logits, hidden_states = [], [], []
         iters = token_ids.shape[0] // sub_batch + int(
             (token_ids.shape[0] % sub_batch) != 0
@@ -122,7 +123,14 @@ class BertAdversarial(torch.nn.Module):
         )
         persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
         persona_batch_mask = persona_batch_outp["attention_mask"].pin_memory()
-        token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
+        persona_batch_list = [
+            persona[persona_batch_mask[i]]
+            for i, persona in enumerate(persona_batch_ids)
+        ]
+        token_types_persona_list = [
+            torch.zeros_like(persona).pin_memory()
+            for persona in persona_batch_list
+        ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 
         history_batch = [
@@ -161,9 +169,12 @@ class BertAdversarial(torch.nn.Module):
                     [-1]
                 )
                 history_size = history_row_mask.sum()
-            print("Bert ", history_size + persona_sizes[i])
-            history_batch_ids_list.append(history_row_ids_flat)
-            history_batch_mask_list.append(history_row_mask)
+            history_batch_ids_list.append(
+                torch.cat([persona_batch_list[i], history_row_ids_flat])
+            )
+            history_batch_mask_list.append(
+                torch.cat([torch.ones_like(persona_batch_list[i]), history_row_mask])
+            )
 
             history_types_ones = torch.ones_like(history_row_ids)
             history_types_zeros = torch.zeros_like(history_row_ids)

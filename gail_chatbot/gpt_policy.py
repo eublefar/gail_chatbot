@@ -85,6 +85,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             position_ids,
         ) = self._build_inputs(state_batch)
 
+        
+        
+        print("GPT ", input_ids.shape)
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
         token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
@@ -139,7 +142,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
         tensor_tuple = self._prepare_persona_batch(persona_batch)
 
-        history_replies_num = [len(state[1]) + 1 for state in state_batch]
+        history_replies_num = [len(state[1]) for state in state_batch]
         history_batch = [
             turn + self.tokenizer.eos_token
             for state in state_batch
@@ -241,23 +244,29 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 )
                 history_size = history_row_mask.sum()
 
-            print("GPT ", history_size + persona_sizes[i])
             history_batch_ids_list.append(history_row_ids_flat)
             history_batch_mask_list.append(history_row_mask)
 
             history_types_ones = torch.ones_like(history_row_ids)
             history_types_zeros = torch.zeros_like(history_row_ids)
-            history_types = (
-                torch.where(
-                    (torch.arange(0, num) % 2 == 0)
-                    .unsqueeze(-1)
-                    .expand_as(history_row_ids),
-                    history_types_ones,
-                    history_types_zeros,
+            try:
+                history_types = (
+                    torch.where(
+                        (torch.arange(0, num) % 2 == 0)
+                        .unsqueeze(-1)
+                        .expand_as(history_row_ids),
+                        history_types_ones,
+                        history_types_zeros,
+                    )
+                    .pin_memory()
+                    .view(-1)
                 )
-                .pin_memory()
-                .view(-1)
-            )
+            except Exception as e:
+                print(num)
+                print(num_sum)
+                print(history_row_ids.shape)
+                print(history_batch_ids.shape)
+                raise e
 
             history_batch_token_type_list.append(history_types)
             num_sum += num
