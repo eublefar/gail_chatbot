@@ -233,7 +233,7 @@ class GailChatbot(Agent):
             gen_dialogs_batch = []
             for i in range(
                 (self.batch_size // self.gen_sub_batch_size)
-                + int(self.batch_size % self.gen_sub_batch_size > 0)
+                + int((self.batch_size % self.gen_sub_batch_size) > 0)
             ):
                 upper = (i + 1) * self.gen_sub_batch_size
                 lower = i * self.gen_sub_batch_size
@@ -246,7 +246,7 @@ class GailChatbot(Agent):
                 )
                 generated_dialogs = self.decode_reply(generated_dialogs)
                 gen_dialogs_batch.extend(generated_dialogs)
-#                 torch.cuda.empty_cache()
+                #                 torch.cuda.empty_cache()
                 scores = self.compute_rewards(
                     generated_dialogs, dialogs_pos[lower:upper]
                 )
@@ -256,7 +256,7 @@ class GailChatbot(Agent):
                     if final_transition is not None:
                         final_transition[2] = scores[i]
                 self.generator.batch_memorize(final_transitions)
-#         torch.cuda.empty_cache()
+        #         torch.cuda.empty_cache()
         self.generator_policy.disable_cache()
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
@@ -271,11 +271,17 @@ class GailChatbot(Agent):
     ):
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
-        dialogs = [(*dialog, torch.empty(
-            0,
-            dtype=torch.long,
-#             device=self.generator_policy.get_device()
-        )) for dialog in dialogs]
+        dialogs = [
+            (
+                *dialog,
+                torch.empty(
+                    0,
+                    dtype=torch.long,
+                    #             device=self.generator_policy.get_device()
+                ),
+            )
+            for dialog in dialogs
+        ]
         prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
         for step in range(max_len):
@@ -283,8 +289,8 @@ class GailChatbot(Agent):
             if done.all():
                 break
             actions = self.generator.batch_act(dialogs, done).detach()
-            ids = self.generator_policy.decode(actions)
-            actions_cpu = actions.to('cpu', non_blocking=True)
+            ids = self.generator_policy.decode(actions).detach()
+            actions_cpu = actions.to("cpu", non_blocking=True)
             for i, dialog in enumerate(dialogs):
                 if done[i]:
                     continue
@@ -307,7 +313,13 @@ class GailChatbot(Agent):
                         dialog,
                     ]
                 else:
-                    transitions[i] = [prev_dialog[i], actions_cpu[i], 0, done[i], dialog]
+                    transitions[i] = [
+                        prev_dialog[i],
+                        actions_cpu[i],
+                        0,
+                        done[i],
+                        dialog,
+                    ]
                     global_step += 1
             if not all(final_transitions):
                 self.generator.batch_memorize(transitions)
@@ -341,40 +353,32 @@ class GailChatbot(Agent):
 
         adequacy_scores = probs[-len(dialogs_gen) :, 1]
 
-#         positive_embs = hidden_states[: len(dialogs_pos), 0, :]
-#         generated_embs = hidden_states[-len(dialogs_gen) :, 0, :]
-#         next_sentence_similarity_scores = torch.nn.functional.cosine_similarity(
-#             positive_embs, generated_embs, dim=-1
-#         )
+        #         positive_embs = hidden_states[: len(dialogs_pos), 0, :]
+        #         generated_embs = hidden_states[-len(dialogs_gen) :, 0, :]
+        #         next_sentence_similarity_scores = torch.nn.functional.cosine_similarity(
+        #             positive_embs, generated_embs, dim=-1
+        #         )
 
-#         self.metrics[
-#             "next_sentence_similarity_scores"
-#         ] = next_sentence_similarity_scores.mean()
-        reward_scores = (
-            adequacy_scores
-            .cpu()
-            .detach()
-            .numpy()
-        )
-
-        self.adversarial.train()
+        #         self.metrics[
+        #             "next_sentence_similarity_scores"
+        #         ] = next_sentence_similarity_scores.mean()
+        reward_scores = adequacy_scores.cpu().detach().numpy()
         return np.asarray(reward_scores)
 
     def update_adversarial_(self, dialogs_neg, dialogs_pos, gen_dialogs_batch):
-        self.adversarial.train()
-        dialog_neg=[]
+        dialog_neg = []
         X = [
-#             *dialogs_neg,
+            #             *dialogs_neg,
             *dialogs_pos,
             *gen_dialogs_batch,
         ]
         y = torch.cat(
             (
-#                 torch.zeros(
-#                     size=[len(dialogs_neg),],
-#                     dtype=torch.long,
-#                     device=self.adversarial.get_device(),
-#                 ),
+                #                 torch.zeros(
+                #                     size=[len(dialogs_neg),],
+                #                     dtype=torch.long,
+                #                     device=self.adversarial.get_device(),
+                #                 ),
                 torch.ones(
                     size=[len(dialogs_pos),],
                     dtype=torch.long,
@@ -388,9 +392,7 @@ class GailChatbot(Agent):
             )
         )
 
-        loss, logits = self.adversarial(
-            X, y, sub_batch=self.adv_sub_batch_size
-        )
+        loss, logits = self.adversarial(X, y, sub_batch=self.adv_sub_batch_size)
         probs = torch.softmax(logits.float(), dim=-1).detach()
         self.metrics["pos_logits"] = probs[
             len(dialogs_neg) : len(dialogs_neg) + len(dialogs_pos), 1
@@ -463,7 +465,7 @@ class GailChatbot(Agent):
         return dialogs_neg, dialogs_pos, dialogs_to_generate
 
     def __del__(self):
-#         self.checkpoint([])
+        #         self.checkpoint([])
         self.writer.close()
         super().__del__()
 

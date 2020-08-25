@@ -91,16 +91,16 @@ class BertAdversarial(torch.nn.Module):
             if labels is not None:
 
                 (
-                    (self.scaler.scale(outp[0]) / iters).backward()
+                    (self.scaler.scale(outp[0] / iters)).backward()
                     if MIXED_PREC
                     else (outp[0] / iters).backward()
                 )
                 loss.append(outp[0].cpu().detach())
                 logits.append(outp[1].cpu().detach())
-#                 hidden_states.append(outp[2][-1].detach())
+            #                 hidden_states.append(outp[2][-1].detach())
             else:
                 logits.append(outp[0].cpu().detach())
-#                 hidden_states.append(outp[1][-1].cpu().detach())
+            #                 hidden_states.append(outp[1][-1].cpu().detach())
             del outp
 
         return (
@@ -146,20 +146,22 @@ class BertAdversarial(torch.nn.Module):
         history_batch_token_type_list = []
         num_sum = 0
         for i, num in enumerate(history_replies_num):
-            history_row_ids = history_batch_ids[num_sum: num_sum + num, :]
+            history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
             history_row_ids_flat = history_row_ids.view([-1])
-            history_row_mask = history_batch_mask[num_sum:num_sum + num, :].view([-1])
-            
+            history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view([-1])
+
             history_size = history_row_mask.sum()
 
             while (history_size + persona_sizes[i]) > 400:
                 num_sum += 1
                 num -= 1
-                history_row_ids = history_batch_ids[num_sum: num_sum + num, :]
+                history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
                 history_row_ids_flat = history_row_ids.view([-1])
-                history_row_mask = history_batch_mask[num_sum: num_sum + num, :].view([-1])
+                history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view(
+                    [-1]
+                )
                 history_size = history_row_mask.sum()
-
+            print("Bert ", history_size + persona_sizes[i])
             history_batch_ids_list.append(history_row_ids_flat)
             history_batch_mask_list.append(history_row_mask)
 
@@ -180,6 +182,7 @@ class BertAdversarial(torch.nn.Module):
             except Exception as e:
                 print(num)
                 print(num_sum)
+                raise e
 
             history_batch_token_type_list.append(history_types)
             num_sum += num

@@ -28,9 +28,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-small")
         self.loc_transform_layer = torch.nn.Linear(768, 768)
         self.std_layer = torch.nn.Sequential(
-            torch.nn.Linear(768, 768),
-            torch.nn.ReLU(True),
-            torch.nn.Linear(768, 768),
+            torch.nn.Linear(768, 768), torch.nn.ReLU(True), torch.nn.Linear(768, 768),
         )
 
         self.value_head = torch.nn.Linear(768, 1)
@@ -65,6 +63,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def forward(self, state_batch: List[Tuple[str, List[str], List[str]]]):
         if self.use_cache:
             past_key_values = self.cache
+            self.cache = None
         else:
             past_key_values = None
 
@@ -134,16 +133,18 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         )
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], torch.Tensor]]):
-        token_type_batch = []
-        input_words = []
-        seqlen = []
+
         utterance_batch_list = [state[2] for state in state_batch]
         persona_batch = [state[0] for state in state_batch]
 
         tensor_tuple = self._prepare_persona_batch(persona_batch)
 
-        history_replies_num = [len(state[1]) for state in state_batch]
-        history_batch = [turn for state in state_batch for turn in state[1]]
+        history_replies_num = [len(state[1]) + 1 for state in state_batch]
+        history_batch = [
+            turn + self.tokenizer.eos_token
+            for state in state_batch
+            for turn in state[1]
+        ]
         tensor_tuple = self._append_history_batch(
             tensor_tuple, history_batch, history_replies_num
         )
@@ -180,7 +181,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
     def _append_history_batch(self, tensor_tuple, history_batch, history_replies_num):
         (persona_batch_ids, persona_batch_mask, token_types_persona,) = tensor_tuple
-        
+
         persona_sizes = persona_batch_mask.sum(dim=1)
         if history_batch:
             history_batch_outp = self.tokenizer(
@@ -188,7 +189,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 return_tensors="pt",
                 padding=True,
                 pad_to_multiple_of=1,
-                add_special_tokens=True,
+                add_special_tokens=False,
                 return_attention_mask=True,
             )
             history_batch_ids = history_batch_outp["input_ids"].pin_memory()
@@ -199,7 +200,10 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 history_mask,
                 history_type_ids,
             ) = self._format_history_tensors(
-                history_batch_ids, history_batch_mask, history_replies_num, persona_sizes
+                history_batch_ids,
+                history_batch_mask,
+                history_replies_num,
+                persona_sizes,
             )
 
             history_token_ids = torch.cat([persona_batch_ids, history_token_ids], dim=1)
@@ -220,21 +224,24 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         history_batch_token_type_list = []
         num_sum = 0
         for i, num in enumerate(history_replies_num):
-            history_row_ids = history_batch_ids[num_sum: num_sum + num, :]
+            history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
 
             history_row_ids_flat = history_row_ids.view([-1])
-            history_row_mask = history_batch_mask[num_sum: num_sum + num, :].view([-1])
-            
+            history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view([-1])
+
             history_size = history_row_mask.sum()
 
             while (history_size + persona_sizes[i]) > 400:
                 num_sum += 1
                 num -= 1
-                history_row_ids = history_batch_ids[num_sum:num_sum + num, :]
+                history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
                 history_row_ids_flat = history_row_ids.view([-1])
-                history_row_mask = history_batch_mask[num_sum:num_sum + num, :].view([-1])
+                history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view(
+                    [-1]
+                )
                 history_size = history_row_mask.sum()
 
+            print("GPT ", history_size + persona_sizes[i])
             history_batch_ids_list.append(history_row_ids_flat)
             history_batch_mask_list.append(history_row_mask)
 
