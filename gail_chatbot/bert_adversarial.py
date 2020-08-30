@@ -17,16 +17,20 @@ except ImportError as e:
 
 
 class BertAdversarial(torch.nn.Module):
-    def __init__(self, lr=1e-6, mixed_precision=True):
+    def __init__(self, lr=3e-5, mixed_precision=True):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("albert-base-v2")
         self.model = AutoModelForSequenceClassification.from_pretrained(
             "albert-base-v2"
         )
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         if MIXED_PREC:
             self.scaler = GradScaler()
-
+    
+    def set_lr(self, lr):
+        for param_group in self.optimizer.param_groups:
+            param_group['lr'] = lr
+    
     def fit_batch(
         self,
         dialogs: List[Tuple[str, List[str]]],
@@ -61,7 +65,7 @@ class BertAdversarial(torch.nn.Module):
             dialogs
         )
 
-        print("Bert ", token_ids.shape)
+#         print("Bert ", token_ids.shape)
         loss, logits, hidden_states = [], [], []
         iters = token_ids.shape[0] // sub_batch + int(
             (token_ids.shape[0] % sub_batch) != 0
@@ -128,7 +132,7 @@ class BertAdversarial(torch.nn.Module):
             for i, persona in enumerate(persona_batch_ids)
         ]
         token_types_persona_list = [
-            torch.zeros_like(persona) for persona in persona_batch_list.pin_memory()
+            torch.zeros_like(persona).pin_memory() for persona in persona_batch_list
         ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 

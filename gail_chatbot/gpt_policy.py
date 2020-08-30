@@ -22,16 +22,17 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def __init__(self, *args, **kwargs):
         torch.nn.Module.__init__(self)
 
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-small")
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
         self.tokenizer.add_special_tokens({"pad_token": self.tokenizer.eos_token})
 
-        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-small")
-        self.loc_transform_layer = torch.nn.Linear(768, 768)
-        self.std_layer = torch.nn.Sequential(
-            torch.nn.Linear(768, 768), torch.nn.ReLU(True), torch.nn.Linear(768, 768),
+        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
+#         self.loc_transform_layer = torch.nn.Linear(768, 768)
+        self.std_layer = torch.nn.Linear(1024, 1024)
+        self.feature_layer = torch.nn.Sequential(
+           torch.nn.Linear(1024, 1024), torch.nn.ReLU(True)
         )
 
-        self.value_head = torch.nn.Linear(768, 1)
+        self.value_head = torch.nn.Linear(1024, 1)
         self.cache = None
         self.use_cache = True
 
@@ -39,7 +40,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
         torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
         torch.save(
-            self.loc_transform_layer.state_dict(), os.path.join(path, "loc_head.bin")
+            self.feature_layer.state_dict(), os.path.join(path, "feature_layer.bin")
         )
         torch.save(self.std_layer.state_dict(), os.path.join(path, "std_head.bin"))
 
@@ -48,8 +49,8 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.value_head.load_state_dict(
             torch.load(os.path.join(path, "value_head.bin"))
         )
-        self.loc_transform_layer.load_state_dict(
-            torch.load(os.path.join(path, "loc_head.bin"))
+        self.feature_layer.load_state_dict(
+            torch.load(os.path.join(path, "feature_layer.bin"))
         )
         self.std_layer.load_state_dict(torch.load(os.path.join(path, "std_head.bin")))
 
@@ -86,7 +87,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             position_ids,
         ) = self._build_inputs(state_batch)
 
-        print("GPT ", input_ids.shape)
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
         token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
@@ -107,8 +107,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 .expand([-1, -1, last_layer_hidden_states.shape[-1]])
             ).to(self.get_device(), non_blocking=True)
             features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
+            means = features# + self.loc_transform_layer(features)
+            features = self.feature_layer(features)
             values = self.value_head(features)
-            means = features + self.loc_transform_layer(features)
             stds = F.relu(self.std_layer(features))
         stds = stds.float() + 1e-10
 
@@ -195,7 +196,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 for i, persona in enumerate(persona_batch_ids)
             ]
             token_types_persona_list = [
-                torch.zeros_like(persona) for persona in persona_batch_list.pin_memory()
+                torch.zeros_like(persona).pin_memory() for persona in persona_batch_list
             ]
 
             history_batch_outp = self.tokenizer(
