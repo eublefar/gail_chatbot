@@ -171,7 +171,9 @@ class GPTFineTune(Agent):
         #  Optimize generative model
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
 
-        logits, labels, loss = self.generator.fit_batch(dialogs_pos)
+        logits, labels, loss = self.generator.fit_batch(
+            dialogs_pos, sub_batch=self.sub_bath_size
+        )
         self.metrics["loss"] = loss
         labels = labels.view([-1, 1])
         logits = logits.view([-1, logits.shape[-1]])[(labels != -100)[:, 0], :]
