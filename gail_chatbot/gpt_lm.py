@@ -130,10 +130,8 @@ class GPTSimple(torch.nn.Module):
             add_special_tokens=True,
             return_attention_mask=True,
         )
-        persona_batch_ids = persona_batch_outp["input_ids"]  # .pin_memory()
-        persona_batch_mask = persona_batch_outp[
-            "attention_mask"
-        ].bool()  # .pin_memory()
+        persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
+        persona_batch_mask = persona_batch_outp["attention_mask"].bool().pin_memory()
         persona_batch_list = [
             persona[persona_batch_mask[i]]
             for i, persona in enumerate(persona_batch_ids)
@@ -145,7 +143,7 @@ class GPTSimple(torch.nn.Module):
             for i, persona in enumerate(persona_batch_ids)
         ]
         token_types_persona_list = [
-            torch.zeros_like(persona) for persona in persona_batch_list  # .pin_memory()
+            torch.zeros_like(persona).pin_memory() for persona in persona_batch_list
         ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 
@@ -163,10 +161,8 @@ class GPTSimple(torch.nn.Module):
             return_attention_mask=True,
         )
 
-        history_batch_ids = history_batch_outp["input_ids"]  # .pin_memory()
-        history_batch_mask = history_batch_outp[
-            "attention_mask"
-        ].bool()  # .pin_memory()
+        history_batch_ids = history_batch_outp["input_ids"].pin_memory()
+        history_batch_mask = history_batch_outp["attention_mask"].bool().pin_memory()
 
         history_batch_ids_list = []
         history_batch_mask_list = []
@@ -214,7 +210,7 @@ class GPTSimple(torch.nn.Module):
                     history_types_ones,
                     history_types_zeros,
                 )
-                # .pin_memory()
+                .pin_memory()
                 .view(-1)
             )[history_row_mask]
 
