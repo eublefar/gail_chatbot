@@ -26,10 +26,10 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.tokenizer.add_special_tokens({"pad_token": self.tokenizer.eos_token})
 
         self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
-#         self.loc_transform_layer = torch.nn.Linear(768, 768)
+        #         self.loc_transform_layer = torch.nn.Linear(768, 768)
         self.std_layer = torch.nn.Linear(1024, 1024)
         self.feature_layer = torch.nn.Sequential(
-           torch.nn.Linear(1024, 1024), torch.nn.ReLU(True)
+            torch.nn.Linear(1024, 1024), torch.nn.ReLU(True)
         )
 
         self.value_head = torch.nn.Linear(1024, 1)
@@ -107,7 +107,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 .expand([-1, -1, last_layer_hidden_states.shape[-1]])
             ).to(self.get_device(), non_blocking=True)
             features = last_layer_hidden_states.gather(1, last_feature_ids).squeeze(1)
-            means = features# + self.loc_transform_layer(features)
+            means = features  # + self.loc_transform_layer(features)
             features = self.feature_layer(features)
             values = self.value_head(features)
             stds = F.relu(self.std_layer(features))
