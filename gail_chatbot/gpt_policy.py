@@ -21,19 +21,17 @@ except ImportError as e:
 class GptPolicy(torch.nn.Module, BasePolicy):
     def __init__(self, *args, **kwargs):
         torch.nn.Module.__init__(self)
-
+        self.temp = 1
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-        self.tokenizer.add_special_tokens({
-            "pad_token": self.tokenizer.eos_token,
-            "sep_token": self.tokenizer.eos_token
-        })
+        self.tokenizer.add_special_tokens(
+            {
+                "pad_token": self.tokenizer.eos_token,
+                "sep_token": self.tokenizer.eos_token,
+            }
+        )
 
         self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
         #         self.loc_transform_layer = torch.nn.Linear(768, 768)
-        self.std_layer = torch.nn.Linear(1024, 1024)
-        self.feature_layer = torch.nn.Sequential(
-            torch.nn.Linear(1024, 1024), torch.nn.ReLU(True)
-        )
 
         self.value_head = torch.nn.Linear(1024, 1)
         self.cache = None
@@ -42,20 +40,12 @@ class GptPolicy(torch.nn.Module, BasePolicy):
     def save(self, path: str):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
         torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
-        torch.save(
-            self.feature_layer.state_dict(), os.path.join(path, "feature_layer.bin")
-        )
-        torch.save(self.std_layer.state_dict(), os.path.join(path, "std_head.bin"))
 
     def load(self, path: str):
         self.model.from_pretrained(os.path.join(path, "model.bin"))
         self.value_head.load_state_dict(
             torch.load(os.path.join(path, "value_head.bin"))
         )
-        self.feature_layer.load_state_dict(
-            torch.load(os.path.join(path, "feature_layer.bin"))
-        )
-        self.std_layer.load_state_dict(torch.load(os.path.join(path, "std_head.bin")))
 
     def get_device(self):
         _, p = next(self.model.named_parameters())
@@ -77,9 +67,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                     ("", [], state[2][-1].unsqueeze(-1)) for state in state_batch
                 ]
             except IndexError as e:
-                print(self.use_cache)
-                print(past_key_values)
-                print(state_batch)
+                # print(self.use_cache)
+                # print(past_key_values)
+                # print(state_batch)
                 raise e
 
         (
@@ -93,34 +83,24 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
         token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
-#         position_ids = position_ids.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
-            last_layer_hidden_states, past_key_values = self.model.transformer(
+            logits, past_key_values, hidden_states = self.model.transformer(
                 input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past=past_key_values,
+                output_hidden_states=True,
             )
-#             last_feature_ids = (
-#                 (torch.LongTensor(seqlen) - 1)
-#                 .unsqueeze(-1)
-#                 .unsqueeze(-1)
-#                 .expand([-1, -1, last_layer_hidden_states.shape[-1]])
-#             ).to(self.get_device(), non_blocking=True)
-            features = last_layer_hidden_states[:, -1, :] #.gather(1, last_feature_ids).squeeze(1)
-            means = features  # + self.loc_transform_layer(features)
-            features = self.feature_layer(features)
+            logits = logits[:, -1, :] / self.temp
+            features = hidden_states[-1][:, -1, :]
             values = self.value_head(features)
-            stds = F.relu(self.std_layer(features))
-        stds = stds.float() + 1e-10
 
         if self.use_cache:
             self.cache = past_key_values
 
-        diag_emb = stds.diag_embed()
-        distr = MultivariateNormal(means.float(), diag_emb)
+        distr = Categorical(logits=logits)
         return {
             "action_distribution": distr,
             "values": values.squeeze(-1),
@@ -134,33 +114,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.use_cache = False
 
     def decode(self, hidden_states, topk=50, temp=None):
-        if not temp:
-            return torch.argmax(self.model.lm_head(hidden_states).detach(), dim=-1).to(
-                "cpu", non_blocking=True
-            )
-        else:
-            return Categorical(
-                torch.nn.functional.softmax(
-                    self.model.lm_head(hidden_states).detach() / temp,
-                    dim=-1
-                )
-            ).sample().to(
-                "cpu", non_blocking=True
-            )
-
-#         decoded = self.model.lm_head(hidden_states).detach()
-#         values, ids = torch.topk(decoded, dim=-1, k=topk)
-#         id_ids = Categorical(
-#             torch.nn.functional.softmax(
-#                 values,
-#                 dim=-1
-#             )
-#         ).sample()
-        
-# #         print(ids.shape, id_ids.shape, ids.gather(index=id_ids.unsqueeze(-1), dim=1).shape)
-#         return ids.gather(index=id_ids.unsqueeze(-1), dim=1).squeeze(-1).to(
-#             "cpu", non_blocking=True
-#         )
+        return hidden_states.to("cpu")
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], torch.Tensor]]):
 
@@ -312,10 +266,10 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                     .view(-1)
                 )[history_row_mask]
             except Exception as e:
-                print(num)
-                print(num_sum)
-                print(history_row_ids.shape)
-                print(history_batch_ids.shape)
+                # print(num)
+                # print(num_sum)
+                # print(history_row_ids.shape)
+                # print(history_batch_ids.shape)
                 raise e
 
             history_batch_token_type_list.append(
@@ -323,17 +277,17 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             )
             num_sum += num
 
-#         history_token_ids = pad_sequence(
-#             history_batch_ids_list,
-#             batch_first=True,
-#             padding_value=self.tokenizer.eos_token_id,
-#         )
-#         history_mask = pad_sequence(
-#             history_batch_mask_list, batch_first=True, padding_value=0.0
-#         )
-#         history_type_ids = pad_sequence(
-#             history_batch_token_type_list, batch_first=True, padding_value=0.0
-#         )
+        #         history_token_ids = pad_sequence(
+        #             history_batch_ids_list,
+        #             batch_first=True,
+        #             padding_value=self.tokenizer.eos_token_id,
+        #         )
+        #         history_mask = pad_sequence(
+        #             history_batch_mask_list, batch_first=True, padding_value=0.0
+        #         )
+        #         history_type_ids = pad_sequence(
+        #             history_batch_token_type_list, batch_first=True, padding_value=0.0
+        #         )
 
         history_token_ids = history_batch_ids_list
         history_mask = history_batch_mask_list
@@ -350,9 +304,11 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         type_list = []
         for i, tensor_tuple_row in enumerate(zip(*tensor_tuple)):
             history_token_ids, history_mask, history_type_ids = tensor_tuple_row
-            
+
             if utterance_batch_list[i].nelement() != 0:
-                lengths.append(history_type_ids.shape[0] + utterance_batch_list[i].shape[0])
+                lengths.append(
+                    history_type_ids.shape[0] + utterance_batch_list[i].shape[0]
+                )
 
                 ids_list.append(
                     torch.cat(
@@ -382,30 +338,22 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                     ).pin_memory()
                 )
             else:
-                ids_list.append(history_token_ids.pin_memory())
-                type_list.append(history_type_ids.pin_memory())
-                mask_list.append(history_mask.pin_memory())
+                ids_list.append(history_token_ids).pin_memory()
+                type_list.append(history_type_ids).pin_memory()
+                mask_list.append(history_mask).pin_memory()
         input_ids = pad_sequence(
-            ids_list,
-            batch_first=True,
-            padding_value=self.tokenizer.eos_token_id
+            ids_list, batch_first=True, padding_value=self.tokenizer.eos_token_id
         )
         token_type_ids_batch = pad_sequence(
-            type_list,
-            batch_first=True,
-            padding_value=0
+            type_list, batch_first=True, padding_value=0
         )
-        attention_mask = pad_sequence(
-            mask_list,
-            batch_first=True,
-            padding_value=0
-        )
+        attention_mask = pad_sequence(mask_list, batch_first=True, padding_value=0)
         return (
             input_ids,
             attention_mask,
             token_type_ids_batch,
             lengths,
-            None#             attention_mask.cumsum(dim=1) - 1,
+            None,  #             attention_mask.cumsum(dim=1) - 1,
         )
 
     def reset_noise(self):

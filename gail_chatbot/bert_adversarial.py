@@ -26,11 +26,11 @@ class BertAdversarial(torch.nn.Module):
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         if MIXED_PREC:
             self.scaler = GradScaler()
-    
+
     def set_lr(self, lr):
         for param_group in self.optimizer.param_groups:
-            param_group['lr'] = lr
-    
+            param_group["lr"] = lr
+
     def fit_batch(
         self,
         dialogs: List[Tuple[str, List[str]]],
@@ -65,7 +65,7 @@ class BertAdversarial(torch.nn.Module):
             dialogs
         )
 
-#         print("Bert ", token_ids.shape)
+        #         print("Bert ", token_ids.shape)
         loss, logits, hidden_states = [], [], []
         iters = token_ids.shape[0] // sub_batch + int(
             (token_ids.shape[0] % sub_batch) != 0
@@ -102,16 +102,16 @@ class BertAdversarial(torch.nn.Module):
                 )
                 loss.append(outp[0].cpu().detach())
                 logits.append(outp[1].cpu().detach())
-            #                 hidden_states.append(outp[2][-1].detach())
+                hidden_states.append(outp[2][-1].detach())
             else:
                 logits.append(outp[0].cpu().detach())
-            #                 hidden_states.append(outp[1][-1].cpu().detach())
+                hidden_states.append(outp[1][-1].cpu().detach())
             del outp
 
         return (
             *([torch.stack(loss).mean()] if labels is not None else []),
             torch.cat(logits, dim=0),
-            #             torch.cat(hidden_states, dim=0),
+            torch.cat(hidden_states, dim=0),
         )
 
     def _build_inputs(self, dialogs):
