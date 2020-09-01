@@ -17,7 +17,7 @@ except ImportError as e:
 
 
 class GPTSimple(torch.nn.Module):
-    def __init__(self, lr=3e-5, mixed_precision=True):
+    def __init__(self, lr=5e-6, mixed_precision=True):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
         self.tokenizer.add_special_tokens(
@@ -91,12 +91,15 @@ class GPTSimple(torch.nn.Module):
                 positions = position_ids[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
+                labels_el = labels[lower:upper].to(
+                    self.get_device(), non_blocking=False
+                )
                 outp = self.model(
                     input_ids=ids,
                     attention_mask=mask,
                     token_type_ids=types,
                     position_ids=positions,
-                    labels=labels[lower:upper] if labels is not None else None,
+                    labels=labels_el,
                     output_hidden_states=True,
                 )
                 del ids, mask, types, positions
@@ -108,15 +111,15 @@ class GPTSimple(torch.nn.Module):
                     else (outp[0] / iters).backward()
                 )
                 loss.append(outp[0].cpu().detach())
-                logits.append(outp[1].cpu().detach())
+                logits = outp[1].cpu().detach()
             else:
                 logits.append(outp[0].cpu().detach())
             del outp
 
         return (
             *([torch.stack(loss).mean()] if labels is not None else []),
-            torch.cat(logits, dim=0),
-            labels,
+            logits,
+            labels_el.cpu(),
         )
 
     def _build_inputs(self, dialogs):
@@ -147,7 +150,7 @@ class GPTSimple(torch.nn.Module):
         ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 
-        print(dialogs)
+#         print(dialogs)
         history_batch = [
             turn + self.tokenizer.sep_token for dialog in dialogs for turn in dialog[1]
         ]

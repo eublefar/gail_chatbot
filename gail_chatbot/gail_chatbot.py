@@ -17,6 +17,7 @@ from gym_loop.agents.pytorch_ppo import PPO
 from tensorboardX import SummaryWriter
 import yaml
 import json
+from random import randint
 
 torch.set_num_threads(8)
 
@@ -251,7 +252,9 @@ class GailChatbot(Agent):
                     final_transitions,
                     self.gen_episode_num,
                 ) = self.generate_dialogs(
-                    dialogs_to_generate[lower:upper], self.gen_episode_num
+                    dialogs_to_generate[lower:upper], 
+                    self.gen_episode_num, 
+                    temp=randint(0, 1000) if not self.train_step >= self.warmup_steps else None
                 )
                 generated_dialogs = self.decode_reply(generated_dialogs)
                 gen_dialogs_batch.extend(generated_dialogs)
@@ -266,7 +269,7 @@ class GailChatbot(Agent):
                 self.generator.batch_memorize(final_transitions)
         if self.train_step >= self.warmup_steps:
             self.generator_policy.disable_cache()
-#             self.generator.memory.batch_size = self.generator.memory.size
+            self.generator.memory.batch_size = self.generator.memory.size
     #         torch.cuda.empty_cache()
             self.generator.update(self.gen_episode_num)
             self.generator_policy.enable_cache()
@@ -279,6 +282,7 @@ class GailChatbot(Agent):
         dialogs: Iterable[Tuple[str, List[str]]],
         episode_num: int = 0,
         max_len: int = 14,
+        temp=None
     ):
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
@@ -300,7 +304,7 @@ class GailChatbot(Agent):
             if done.all():
                 break
             actions = self.generator.batch_act(dialogs, done).detach()
-            ids = self.generator_policy.decode(actions).detach()
+            ids = self.generator_policy.decode(actions, temp=temp).detach()
             actions_cpu = actions.to("cpu", non_blocking=True)
             for i, dialog in enumerate(dialogs):
                 if done[i]:
@@ -382,17 +386,17 @@ class GailChatbot(Agent):
         torch.cuda.empty_cache()
         dialog_neg = []
         X = [
-            #             *dialogs_neg,
+#             *dialogs_neg,
             *dialogs_pos,
             *gen_dialogs_batch,
         ]
         y = torch.cat(
             (
-                #                 torch.zeros(
-                #                     size=[len(dialogs_neg),],
-                #                     dtype=torch.long,
-                #                     device=self.adversarial.get_device(),
-                #                 ),
+#                 torch.zeros(
+#                     size=[len(dialogs_neg),],
+#                     dtype=torch.long,
+#                     device=self.adversarial.get_device(),
+#                 ),
                 torch.ones(
                     size=[len(dialogs_pos),],
                     dtype=torch.long,
@@ -408,8 +412,11 @@ class GailChatbot(Agent):
 
         loss, logits = self.adversarial(X, y, sub_batch=self.adv_sub_batch_size)
         probs = torch.softmax(logits.float(), dim=-1).detach()
+#         self.metrics["neg_logits"] = probs[
+#             0: len(dialogs_neg), 1
+#         ].mean()
         self.metrics["pos_logits"] = probs[
-            : len(dialogs_pos), 1
+            0: len(dialogs_pos), 1
         ].mean()
         self.metrics["gen_logits"] = (
             probs[-len(gen_dialogs_batch) :, 1].mean() if self.update_generator else -1
@@ -478,7 +485,7 @@ class GailChatbot(Agent):
         return dialogs_neg, dialogs_pos, dialogs_to_generate
 
     def __del__(self):
-        self.checkpoint([])
+#         self.checkpoint([])
         self.writer.close()
         super().__del__()
 

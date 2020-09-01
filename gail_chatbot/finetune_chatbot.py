@@ -172,7 +172,7 @@ class GPTFineTune(Agent):
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
 
         logits, labels, loss = self.generator.fit_batch(
-            dialogs_pos, sub_batch=self.sub_bath_size
+            dialogs_pos, sub_batch=self.sub_batch_size
         )
         self.metrics["loss"] = loss
         labels = labels.view([-1, 1])
@@ -192,10 +192,10 @@ class GPTFineTune(Agent):
             onehot.numpy(), logits.numpy(), average="macro",
         )
         self.metrics["accuracy"] = accuracy_score(
-            onehot.numpy(), (logits > 0.5).int().numpy()
+            onehot.numpy(), (logits == logits.max(dim=1)).int().numpy()
         )
         self.metrics["f1_score"] = f1_score(
-            onehot.numpy(), (logits > 0.5).int().numpy(), average="macro"
+            onehot.numpy(), (logits == logits.max(dim=1)).int().numpy(), average="macro"
         )
 
         if self.train_step % self.episode_num_log == 0 and self.train_step:
@@ -236,7 +236,7 @@ class GPTFineTune(Agent):
         ) + "_{}".format(self.train_step)
         if not os.path.isdir(gen_p):
             os.mkdir(gen_p)
-        self.generator_policy.save(gen_p)
+        self.generator.save(gen_p)
 
     def flatten(
         self, observations: List[Message]
@@ -261,7 +261,7 @@ class GPTFineTune(Agent):
         return dialogs_neg, dialogs_pos, dialogs_to_generate
 
     def __del__(self):
-        #         self.checkpoint([])
+        self.checkpoint()
         self.writer.close()
         super().__del__()
 
