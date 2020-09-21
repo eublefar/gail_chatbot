@@ -64,7 +64,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         if past_key_values is not None:
             try:
                 state_batch = [
-                    ("", [], state[2][-1].unsqueeze(-1)) for state in state_batch
+                    ("", [], torch.LongTensor([state[2][-1]],)) for state in state_batch
                 ]
             except IndexError as e:
                 # print(self.use_cache)
@@ -85,7 +85,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
-            logits, past_key_values, hidden_states = self.model.transformer(
+            logits, past_key_values, hidden_states = self.model(
                 input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
@@ -101,6 +101,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             self.cache = past_key_values
 
         distr = Categorical(logits=logits)
+        print(logits.shape, "logits.shape")
         return {
             "action_distribution": distr,
             "values": values.squeeze(-1),

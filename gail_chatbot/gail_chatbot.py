@@ -21,6 +21,8 @@ from random import randint
 
 torch.set_num_threads(8)
 
+# MAKE SURE THAT N_STEPS IS SET CORRECTLY SO THAT ALL BATCH_SIZE//SUBBATCHSIZE * 2 ELEMENTS FIT IN MEMORY
+
 
 class GailChatbot(Agent):
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
@@ -95,6 +97,7 @@ class GailChatbot(Agent):
     def _get_default_params(self):
         return {
             "gail": {
+                "maxlen": 50,
                 "adversarial_lr_warmup": 1e-5,
                 "adversarial_lr": 1e-5,
                 "warmup_steps": 100,
@@ -245,35 +248,11 @@ class GailChatbot(Agent):
     def update_generator_(self, dialogs_pos, dialogs_to_generate):
         torch.cuda.empty_cache()
         with torch.no_grad():
-            gen_dialogs_batch = []
-            for i in range(
-                (self.batch_size // self.gen_sub_batch_size)
-                + int((self.batch_size % self.gen_sub_batch_size) > 0)
-            ):
-                upper = (i + 1) * self.gen_sub_batch_size
-                lower = i * self.gen_sub_batch_size
-                (
-                    generated_dialogs,
-                    final_transitions,
-                    self.gen_episode_num,
-                ) = self.generate_dialogs(
-                    dialogs_to_generate[lower:upper],
-                    self.gen_episode_num,
-                    temp=randint(0, 1000)
-                    if not self.train_step >= self.warmup_steps
-                    else None,
-                )
-                generated_dialogs = self.decode_reply(generated_dialogs)
-                gen_dialogs_batch.extend(generated_dialogs)
-                scores = self.compute_rewards(
-                    generated_dialogs, dialogs_pos[lower:upper]
-                )
-                self.metrics["gen_reward"] = scores.mean()
+            gen_dialogs_batch = self.generate_dialog_batch(
+                dialogs_to_generate, dialogs_pos
+            )
+            self.force_teacher_batch(dialogs_pos)
 
-                for i, final_transition in enumerate(final_transitions):
-                    if final_transition is not None:
-                        final_transition[2] = scores[i]
-                self.generator.batch_memorize(final_transitions)
         if self.train_step >= self.warmup_steps:
             self.generator_policy.disable_cache()
             self.generator.memory.batch_size = self.generator.memory.size
@@ -284,11 +263,42 @@ class GailChatbot(Agent):
             self.generator.memory.empty()
         return gen_dialogs_batch
 
+    def generate_dialog_batch(self, dialogs_to_generate, dialogs_pos):
+        gen_dialogs_batch = []
+        for i in range(
+            (self.batch_size // self.gen_sub_batch_size)
+            + int((self.batch_size % self.gen_sub_batch_size) > 0)
+        ):
+            upper = (i + 1) * self.gen_sub_batch_size
+            lower = i * self.gen_sub_batch_size
+            (
+                generated_dialogs,
+                final_transitions,
+                self.gen_episode_num,
+            ) = self.generate_dialogs(
+                dialogs_to_generate[lower:upper],
+                self.gen_episode_num,
+                temp=randint(0, 1000)
+                if not self.train_step >= self.warmup_steps
+                else None,
+                max_len=self.maxlen,
+            )
+            generated_dialogs = self.decode_reply(generated_dialogs)
+            gen_dialogs_batch.extend(generated_dialogs)
+            scores = self.compute_rewards(generated_dialogs, dialogs_pos[lower:upper])
+            self.metrics["gen_reward"] = scores.mean()
+
+            for i, final_transition in enumerate(final_transitions):
+                if final_transition is not None:
+                    final_transition[2] = scores[i]
+            self.generator.batch_memorize(final_transitions)
+        return gen_dialogs_batch
+
     def generate_dialogs(
         self,
         dialogs: Iterable[Tuple[str, List[str]]],
         episode_num: int = 0,
-        max_len: int = 14,
+        max_len: int = 32,
         temp=None,
     ):
         global_step = 0
@@ -344,10 +354,88 @@ class GailChatbot(Agent):
                     ]
                     global_step += 1
             if not all(final_transitions):
+                # print(transitions[i])
                 self.generator.batch_memorize(transitions)
             del actions, ids, actions_cpu, transitions
         self.generator_policy.clear_cache()
         return dialogs, final_transitions, episode_num
+
+    def force_teacher_batch(self, dialogs_pos):
+        for i in range(
+            (self.batch_size // self.gen_sub_batch_size)
+            + int((self.batch_size % self.gen_sub_batch_size) > 0)
+        ):
+            upper = (i + 1) * self.gen_sub_batch_size
+            lower = i * self.gen_sub_batch_size
+            self.gen_episode_num = self.force_teacher(
+                dialogs_pos[lower:upper], self.gen_episode_num, max_len=self.maxlen
+            )
+
+    def force_teacher(
+        self,
+        dialogs: Iterable[Tuple[str, List[str]]],
+        episode_num: int = 0,
+        max_len: int = 32,
+        temp=None,
+    ):
+        global_step = 0
+        done = np.zeros([len(dialogs)], dtype=bool)
+        actions = [
+            torch.LongTensor(self.generator_policy.tokenizer.encode(dialog[1][-1]))
+            for dialog in dialogs
+        ]
+        dialogs = [
+            (
+                dialog[0],
+                dialog[1][:-1],
+                torch.empty(
+                    0,
+                    dtype=torch.long,
+                    #             device=self.generator_policy.get_device()
+                ),
+            )
+            for dialog in dialogs
+        ]
+        prev_dialog = [None for dialog in dialogs]
+        final_transitions = [None] * len(dialogs)
+        for step in range(max_len):
+            transitions = [None] * len(dialogs)
+            if done.all():
+                break
+            _ = self.generator.batch_act(
+                dialogs, done, log_prob_override=torch.ones(len(dialogs))
+            ).detach()
+            for i, dialog in enumerate(dialogs):
+                if done[i]:
+                    continue
+                prev_dialog[i] = deepcopy(dialog)
+                new_utterance = actions[i][: (step + 1)]
+                dialogs[i] = (*dialog[:-1], new_utterance)
+                if (step == (len(actions[i]) - 1)) or (step == (max_len - 1)):
+                    episode_num += 1
+                    done[i] = True
+                    final_transitions[i] = [
+                        prev_dialog[i],
+                        actions[i][step],
+                        1,
+                        done[i],
+                        dialog,
+                    ]
+                else:
+                    transitions[i] = [
+                        prev_dialog[i],
+                        actions[i][step],
+                        0,
+                        done[i],
+                        dialog,
+                    ]
+                    global_step += 1
+            if not all(final_transitions):
+                self.generator.batch_memorize(transitions)
+            del transitions
+        self.generator_policy.clear_cache()
+        self.generator.batch_memorize(final_transitions)
+        return episode_num
 
     def decode_reply(self, generated_dialogs):
         generated_dialogs_converted = []
