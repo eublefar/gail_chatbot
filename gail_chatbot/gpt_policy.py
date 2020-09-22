@@ -101,7 +101,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             self.cache = past_key_values
 
         distr = Categorical(logits=logits)
-#         print(logits.shape, "logits.shape")
+        #         print(logits.shape, "logits.shape")
         return {
             "action_distribution": distr,
             "values": values.squeeze(-1),

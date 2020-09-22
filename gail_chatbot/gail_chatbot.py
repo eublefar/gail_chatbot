@@ -94,12 +94,12 @@ class GailChatbot(Agent):
         self._construct_generator(overwrite_params.get("generator_agent", {}), path)
         self._construct_adversarial(path)
         self.writer = SummaryWriter(os.path.join(path, filename) + ".tensorboard")
-        self.reward_scores = torch.nn.BatchNorm1d(self.batch_size)
+        self.reward_norm = torch.nn.BatchNorm1d(1)
 
     def _get_default_params(self):
         return {
             "gail": {
-                "gd_frac": 0.3
+                "gd_frac": 0.3,
                 "maxlen": 50,
                 "adversarial_lr_warmup": 1e-5,
                 "adversarial_lr": 1e-5,
@@ -224,8 +224,10 @@ class GailChatbot(Agent):
             self.eval_step += 1
         else:
             self.train_step += 1
-            if self.warmup_steps and (self.train_step % self.warmup_steps == 0) and (
-                self.train_step // self.warmup_steps == 1
+            if (
+                self.warmup_steps
+                and (self.train_step % self.warmup_steps == 0)
+                and (self.train_step // self.warmup_steps == 1)
             ):
                 self.adversarial.set_lr(self.adversarial_lr)
 
@@ -258,7 +260,7 @@ class GailChatbot(Agent):
 
         if self.train_step >= self.warmup_steps:
             self.generator_policy.disable_cache()
-#             self.generator.memory.batch_size = self.generator.memory.size
+            #             self.generator.memory.batch_size = self.generator.memory.size
             #         torch.cuda.empty_cache()
             self.generator.update(self.gen_episode_num)
             self.generator_policy.enable_cache()
@@ -375,7 +377,6 @@ class GailChatbot(Agent):
                 dialogs_pos[lower:upper], self.gen_episode_num, max_len=self.maxlen
             )
 
-
     def force_teacher(
         self,
         dialogs: Iterable[Tuple[str, List[str]]],
@@ -386,8 +387,10 @@ class GailChatbot(Agent):
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
         actions = [
-            torch.LongTensor(self.generator_policy.tokenizer.encode(dialog[1][-1])
-                             + [self.generator_policy.tokenizer.eos_token_id])
+            torch.LongTensor(
+                self.generator_policy.tokenizer.encode(dialog[1][-1])
+                + [self.generator_policy.tokenizer.eos_token_id]
+            )
             for dialog in dialogs
         ]
         dialogs = [
@@ -423,7 +426,7 @@ class GailChatbot(Agent):
                     final_transitions[i] = [
                         prev_dialog[i],
                         actions[i][step],
-                        1,
+                        2,
                         done[i],
                         dialog,
                     ]
@@ -455,79 +458,30 @@ class GailChatbot(Agent):
         return generated_dialogs_converted
 
     def compute_rewards(self, dialogs_gen, dialogs_pos):
-        X = [
-#             *(dialogs_pos if self.update_adversarial else []),
-            *(dialogs_gen if self.update_generator else []),
-        ]
-
-        (logits, hidden_states) = self.adversarial(X, sub_batch=self.gen_sub_batch_size)
-        logits = logits.cpu().float().detach()
-        probs = torch.softmax(logits, dim=-1)
-
-#         self.metrics["pos_logits_predict"] = probs[: len(dialogs_pos), 1].mean()
-        self.metrics["gen_logits_predict"] = probs[
-#             -len(dialogs_gen) :,
-            :, 1].mean()
-        # self.metrics["gen_logits_predict"] = probs[:, 1].mean()
-
-        adequacy_scores = probs[
-#             -len(dialogs_gen) :,
-            :, 1]
-        # adequacy_scores = probs[:, 1]
-
-#         positive_embs = hidden_states[: len(dialogs_pos), 0, :]
-#         generated_embs = hidden_states[-len(dialogs_gen) :, 0, :]
-#         next_sentence_similarity_scores = torch.nn.functional.cosine_similarity(
-#             positive_embs, generated_embs, dim=-1
-#         )
-
-#         self.metrics[
-#             "next_sentence_similarity_scores"
-#         ] = next_sentence_similarity_scores.mean()
-        reward_scores = (
-            adequacy_scores.cpu().detach().numpy()
-#             + next_sentence_similarity_scores.detach().numpy()
+        loss, probs = self.adversarial.forward_contrastive(
+            dialogs_gen, dialogs_pos, sub_batch=self.gen_sub_batch_size, backprop=False
         )
-        reward_scores = self.reward_norm(reward_scores)
-        return np.asarray(reward_scores)
+        probs = probs.cpu().float().detach()
+
+        self.metrics["gen_logits_predict"] = probs[:, 0].mean()
+
+        adequacy_scores = probs[:, 0]
+        adequacy_scores = self.reward_norm(adequacy_scores.unsqueeze(-1)).squeeze(-1)
+
+        reward_scores = adequacy_scores.cpu().detach().numpy()
+
+        return reward_scores
 
     def update_adversarial_(self, dialogs_neg, dialogs_pos, gen_dialogs_batch):
         torch.cuda.empty_cache()
         dialog_neg = []
-        X = [
-            #             *dialogs_neg,
-            *dialogs_pos,
-            *gen_dialogs_batch,
-        ]
-        y = torch.cat(
-            (
-                #                 torch.zeros(
-                #                     size=[len(dialogs_neg),],
-                #                     dtype=torch.long,
-                #                     device=self.adversarial.get_device(),
-                #                 ),
-                torch.ones(
-                    size=[len(dialogs_pos),],
-                    dtype=torch.long,
-                    device=self.adversarial.get_device(),
-                ),
-                torch.zeros(
-                    size=[len(gen_dialogs_batch),],
-                    dtype=torch.long,
-                    device=self.adversarial.get_device(),
-                ),
-            )
+
+        loss, probs = self.adversarial.forward_contrastive(
+            gen_dialogs_batch, dialogs_pos, sub_batch=self.adv_sub_batch_size
         )
 
-        loss, logits, _ = self.adversarial(X, y, sub_batch=self.adv_sub_batch_size)
-        probs = torch.softmax(logits.float(), dim=-1).detach()
-        #         self.metrics["neg_logits"] = probs[
-        #             0: len(dialogs_neg), 1
-        #         ].mean()
-        self.metrics["pos_logits"] = probs[0 : len(dialogs_pos), 1].mean()
-        self.metrics["gen_logits"] = (
-            probs[-len(gen_dialogs_batch) :, 1].mean() if self.update_generator else -1
-        )
+        self.metrics["pos_logits"] = probs[:, 1].mean()
+        self.metrics["gen_logits"] = probs[:, 0].mean() if self.update_generator else -1
         self.metrics["adv_loss"] = loss
 
         if MIXED_PREC:
