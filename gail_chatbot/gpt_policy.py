@@ -101,7 +101,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             self.cache = past_key_values
 
         distr = Categorical(logits=logits)
-        print(logits.shape, "logits.shape")
+#         print(logits.shape, "logits.shape")
         return {
             "action_distribution": distr,
             "values": values.squeeze(-1),
@@ -339,9 +339,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                     ).pin_memory()
                 )
             else:
-                ids_list.append(history_token_ids).pin_memory()
-                type_list.append(history_type_ids).pin_memory()
-                mask_list.append(history_mask).pin_memory()
+                ids_list.append(history_token_ids.pin_memory())
+                type_list.append(history_type_ids.pin_memory())
+                mask_list.append(history_mask.pin_memory())
         input_ids = pad_sequence(
             ids_list, batch_first=True, padding_value=self.tokenizer.eos_token_id
         )

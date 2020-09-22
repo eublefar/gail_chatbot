@@ -132,7 +132,7 @@ class BertAdversarial(torch.nn.Module):
             for i, persona in enumerate(persona_batch_ids)
         ]
         token_types_persona_list = [
-            torch.zeros_like(persona) for persona in persona_batch_list.pin_memory()
+            torch.zeros_like(persona).pin_memory() for persona in persona_batch_list
         ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 
