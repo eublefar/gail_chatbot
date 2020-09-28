@@ -91,7 +91,7 @@ class GPTFineTune(Agent):
         self.generator = GPTSimple()
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["generator"])
-        if os.path.isfile(adv_dir):
+        if os.path.isdir(adv_dir):
             self.generator.load(adv_dir)
         else:
             self.generator.save(adv_dir)
@@ -174,31 +174,31 @@ class GPTFineTune(Agent):
         logits, labels, loss = self.generator.fit_batch(
             dialogs_pos, sub_batch=self.sub_batch_size
         )
-        self.metrics["loss"] = loss
-        labels = labels.view([-1, 1])
-        logits = logits.view([-1, logits.shape[-1]])[(labels != -100)[:, 0], :]
-        labels = labels[labels != -100]
-
-        onehot = torch.zeros_like(logits)
-        onehot.scatter_(dim=1, index=labels.unsqueeze(-1), value=1)
-
-        logits = logits[:, (onehot == 1).any(dim=0)]
-        onehot = onehot[:, (onehot == 1).any(dim=0)]
-
-        self.metrics["ap"] = average_precision_score(
-            onehot.numpy(), logits.numpy(), average="macro",
-        )
-        self.metrics["mAUC"] = average_precision_score(
-            onehot.numpy(), logits.numpy(), average="macro",
-        )
-        self.metrics["accuracy"] = accuracy_score(
-            onehot.numpy(), (logits == logits.max(dim=1)).int().numpy()
-        )
-        self.metrics["f1_score"] = f1_score(
-            onehot.numpy(), (logits == logits.max(dim=1)).int().numpy(), average="macro"
-        )
 
         if self.train_step % self.episode_num_log == 0 and self.train_step:
+            self.metrics["loss"] = loss
+            labels = labels.view([-1, 1])
+            logits = logits.view([-1, logits.shape[-1]])[(labels != -100)[:, 0], :]
+            labels = labels[labels != -100]
+            entropy = Categorical(logits=logits).entropy().mean().item()
+            onehot = torch.zeros_like(logits)
+            onehot.scatter_(dim=1, index=labels.unsqueeze(-1), value=1)
+
+            logits = logits[:, (onehot == 1).any(dim=0)]
+            onehot = onehot[:, (onehot == 1).any(dim=0)]
+            self.metrics["ap"] = average_precision_score(
+                onehot.numpy(), logits.numpy(), average="macro",
+            )
+            self.metrics["mAUC"] = average_precision_score(
+                onehot.numpy(), logits.numpy(), average="macro",
+            )
+            self.metrics["entropy"] = entropy
+            self.metrics["accuracy"] = accuracy_score(
+                onehot.numpy(), (torch.eq(logits, logits.max(dim=1).values.unsqueeze(1))).int().numpy()
+            )
+            self.metrics["f1_score"] = f1_score(
+                onehot.numpy(), (torch.eq(logits, logits.max(dim=1).values.unsqueeze(1))).int().numpy(), average="macro"
+            )
             self.write_metrics()
 
         if (

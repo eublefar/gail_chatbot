@@ -17,7 +17,7 @@ except ImportError as e:
 
 
 class GPTSimple(torch.nn.Module):
-    def __init__(self, lr=5e-6, mixed_precision=True):
+    def __init__(self, lr=1e-5, mixed_precision=True):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
         self.tokenizer.add_special_tokens(
@@ -30,6 +30,7 @@ class GPTSimple(torch.nn.Module):
         self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         self.ignore_token_id = -100
+        self.lr = lr
         if MIXED_PREC:
             self.scaler = GradScaler()
 
@@ -102,6 +103,7 @@ class GPTSimple(torch.nn.Module):
                     labels=labels_el,
                     output_hidden_states=True,
                 )
+
                 del ids, mask, types, positions
             if labels is not None:
 
@@ -118,19 +120,19 @@ class GPTSimple(torch.nn.Module):
 
         return (
             *([torch.stack(loss).mean()] if labels is not None else []),
-            logits,
+            logits.float(),
             labels_el.cpu(),
         )
 
     def _build_inputs(self, dialogs):
         result = []
-        persona_batch = [dialog[0] for dialog in dialogs]
+        persona_batch = [dialog[0] + self.tokenizer.sep_token for dialog in dialogs]
         persona_batch_outp = self.tokenizer(
             persona_batch,
             return_tensors="pt",
             padding=True,
             pad_to_multiple_of=1,
-            add_special_tokens=True,
+            add_special_tokens=False,
             return_attention_mask=True,
         )
         persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
@@ -252,6 +254,7 @@ class GPTSimple(torch.nn.Module):
         self.tokenizer.save_pretrained(path)
 
     def load(self, path):
-        self.model.from_pretrained(path)
-        self.tokenizer.from_pretrained(path)
+        self.model = self.model.from_pretrained(path).cuda().train()
+        self.tokenizer= self.tokenizer.from_pretrained(path)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, eps=1e-10)
 

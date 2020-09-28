@@ -17,11 +17,11 @@ except ImportError as e:
 
 
 class BertAdversarial(torch.nn.Module):
-    def __init__(self, lr=3e-5, mixed_precision=True):
+    def __init__(self, lr=4e-6, mixed_precision=True):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("albert-base-v2")
+        self.tokenizer = AutoTokenizer.from_pretrained("roberta-base")
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            "albert-base-v2"
+            "roberta-base"
         )
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         if MIXED_PREC:
@@ -32,17 +32,16 @@ class BertAdversarial(torch.nn.Module):
             param_group["lr"] = lr
 
     def forward_contrastive(self, dialogs_gen, dialogs_pos, sub_batch=8, backprop=True):
-
+        token_ids, token_type_ids, attention_mask, position_ids = self._build_inputs(
+            [*dialogs_gen, *dialogs_pos]
+        )
         dialogs_gen = [(dialog[0], dialog[1][:-1]) for dialog in dialogs_gen]
         dialogs_pos = [(dialog[0], dialog[1][:-1]) for dialog in dialogs_pos]
         if dialogs_pos != dialogs_gen:
             print("dialogs_pos", dialogs_pos)
             print("dialogs_gen", dialogs_gen)
             raise RuntimeError("Paired dialog contexts are different")
-
-        token_ids, token_type_ids, attention_mask, position_ids = self._build_inputs(
-            [*dialogs_gen, *dialogs_pos]
-        )
+        
         token_ids_gen = token_ids.narrow(0, 0, len(dialogs_gen))
         token_ids_pos = token_ids.narrow(0, len(dialogs_gen), len(dialogs_pos))
 
@@ -95,36 +94,44 @@ class BertAdversarial(torch.nn.Module):
                 positions_pos = position_ids_pos[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
-
+#                 print(self.model)
+#                 print(ids_gen)
+#                 print(ids_pos)
                 outp_gen = self.model(
                     input_ids=ids_gen,
                     attention_mask=mask_gen,
-                    token_type_ids=types_gen,
+#                     token_type_ids=types_gen,
                     position_ids=positions_gen,
                 )
 
                 outp_pos = self.model(
                     input_ids=ids_pos,
                     attention_mask=mask_pos,
-                    token_type_ids=types_pos,
+#                     token_type_ids=types_pos,
                     position_ids=positions_pos,
                 )
+#                 print(outp_pos)
+#                 labels = torch.stack(
+#                     [
+#                         torch.zeros_like(outp_gen[0][:, 1]),
+#                         torch.ones_like(outp_pos[0][:, 1]),
+#                     ],
+#                     dim=1,
+#                 ).long()
+                
                 logits = torch.stack([outp_gen[0][:, 1], outp_pos[0][:, 1]], dim=1)
-                probs = torch.softmax(logits, dim=1)
-                labels = torch.stack(
-                    [
-                        torch.zeros_like(outp_gen[0][:, 1]),
-                        torch.ones_like(outp_pos[0][:, 1]),
-                    ],
-                    dim=1,
-                )
-                loss = torch.nn.functional.binary_cross_entropy(probs, labels)
+                loss = torch.nn.functional.cross_entropy(logits, torch.ones_like(outp_pos[0][:, 1]).long())
                 if backprop:
                     (self.scaler.scale(loss / iters)).backward()
-
-                loss_return += (loss / iters).cpu().item()
-                probs_return.append(probs)
-        return loss, torch.cat(probs_return, dim=0)
+            probs = torch.softmax(logits.float(), dim=1)
+            
+            loss_return += (loss.float() / iters).cpu().item()
+            probs_return.append(probs)
+        probs = torch.cat(probs_return, dim=0)
+        if (probs != probs).any():
+            print("Nan in probs")
+            probs = torch.where(torch.isnan(probs), torch.zeros_like(probs), probs)
+        return loss_return, torch.cat(probs_return, dim=0)
 
     def get_device(self) -> Union[int, str]:
         _, p = next(self.model.named_parameters())
@@ -132,13 +139,13 @@ class BertAdversarial(torch.nn.Module):
 
     def _build_inputs(self, dialogs):
         result = []
-        persona_batch = [dialog[0] for dialog in dialogs]
+        persona_batch = [dialog[0] + self.tokenizer.sep_token for dialog in dialogs]
         persona_batch_outp = self.tokenizer(
             persona_batch,
             return_tensors="pt",
             padding=True,
             pad_to_multiple_of=1,
-            add_special_tokens=True,
+            add_special_tokens=False,
             return_attention_mask=True,
         )
         persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()

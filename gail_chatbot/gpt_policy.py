@@ -3,26 +3,27 @@ import os
 import gc
 import numpy as np
 import torch
-from transformers import AutoModelWithLMHead, AutoTokenizer
+from transformers import AutoModelWithLMHead, AutoTokenizer, GPT2Tokenizer, GPT2LMHeadModel
 from gym_loop.policies.base_policy import BasePolicy
 from contextlib import suppress
 import torch.nn.functional as F
 from torch.distributions import MultivariateNormal, Categorical
 from torch.nn.utils.rnn import pad_sequence
 
-try:
-    from torch.cuda.amp import autocast
+# try:
+#     from torch.cuda.amp import autocast
 
-    MIXED_PREC = True
-except ImportError as e:
-    MIXED_PREC = False
+#     MIXED_PREC = True
+# except ImportError as e:
+MIXED_PREC = False
 
 
 class GptPolicy(torch.nn.Module, BasePolicy):
     def __init__(self, *args, **kwargs):
         torch.nn.Module.__init__(self)
         self.temp = 1
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+        self.block_eos = False
+        self.tokenizer = GPT2Tokenizer.from_pretrained("microsoft/DialoGPT-medium")
         self.tokenizer.add_special_tokens(
             {
                 "pad_token": self.tokenizer.eos_token,
@@ -30,10 +31,14 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             }
         )
 
-        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
+        self.model = GPT2LMHeadModel.from_pretrained("microsoft/DialoGPT-medium")
         #         self.loc_transform_layer = torch.nn.Linear(768, 768)
-
-        self.value_head = torch.nn.Linear(1024, 1)
+        
+        self.value_head = torch.nn.Sequential(
+            torch.nn.Linear(1024, 256),
+            torch.nn.ReLU(True),
+            torch.nn.Linear(256, 1)
+        )
         self.cache = None
         self.use_cache = True
 
@@ -42,7 +47,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
 
     def load(self, path: str):
-        self.model.from_pretrained(os.path.join(path, "model.bin"))
+        self.model = self.model.from_pretrained(os.path.join(path, "model.bin"))
         self.value_head.load_state_dict(
             torch.load(os.path.join(path, "value_head.bin"))
         )
@@ -60,7 +65,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             self.cache = None
         else:
             past_key_values = None
-
         if past_key_values is not None:
             try:
                 state_batch = [
@@ -68,8 +72,8 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 ]
             except IndexError as e:
                 # print(self.use_cache)
-                # print(past_key_values)
-                # print(state_batch)
+                print(past_key_values)
+                print(state_batch)
                 raise e
 
         (
@@ -79,7 +83,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             attention_mask,
             position_ids,
         ) = self._build_inputs(state_batch)
-
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
         token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
@@ -89,19 +92,19 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
-                position_ids=position_ids,
                 past=past_key_values,
                 output_hidden_states=True,
             )
-            logits = logits[:, -1, :] / self.temp
+            logits = logits[:, -1, :] 
             features = hidden_states[-1][:, -1, :]
-            values = self.value_head(features)
+            values = self.value_head(features.squeeze(1))
 
         if self.use_cache:
             self.cache = past_key_values
-
+            
+#         if self.block_eos:
+#             logits[:, self.tokenizer.eos_token_id] = float("-inf")
         distr = Categorical(logits=logits)
-        #         print(logits.shape, "logits.shape")
         return {
             "action_distribution": distr,
             "values": values.squeeze(-1),
@@ -146,12 +149,12 @@ class GptPolicy(torch.nn.Module, BasePolicy):
 
     def _prepare_persona_batch(self, persona_batch):
         if all(persona_batch):
+            persona_batch = [persona + self.tokenizer.eos_token for persona in persona_batch]
             persona_batch_outp = self.tokenizer(
                 persona_batch,
                 return_tensors="pt",
                 padding=True,
-                pad_to_multiple_of=1,
-                add_special_tokens=True,
+                add_special_tokens=False,
                 return_attention_mask=True,
                 return_length=True,
             )
@@ -174,7 +177,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         if history_batch:
 
             persona_batch_list = [
-                persona[persona_batch_mask[i]]
+                persona[persona_batch_mask[i]] 
                 for i, persona in enumerate(persona_batch_ids)
             ]
             token_types_persona_list = [
@@ -185,7 +188,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 history_batch,
                 return_tensors="pt",
                 padding=True,
-                pad_to_multiple_of=1,
                 add_special_tokens=False,
                 return_attention_mask=True,
             )
@@ -339,6 +341,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                     ).pin_memory()
                 )
             else:
+                lengths.append(
+                    history_type_ids.shape[0]
+                )
                 ids_list.append(history_token_ids.pin_memory())
                 type_list.append(history_type_ids.pin_memory())
                 mask_list.append(history_mask.pin_memory())
