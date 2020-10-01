@@ -27,7 +27,9 @@ class GPTSimple(torch.nn.Module):
             }
         )
 
-        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium")
+        self.model = AutoModelWithLMHead.from_pretrained(
+            "microsoft/DialoGPT-medium"
+        ).train()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         self.ignore_token_id = -100
         self.lr = lr
@@ -152,7 +154,7 @@ class GPTSimple(torch.nn.Module):
         ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 
-#         print(dialogs)
+        #         print(dialogs)
         history_batch = [
             turn + self.tokenizer.sep_token for dialog in dialogs for turn in dialog[1]
         ]
@@ -255,6 +257,8 @@ class GPTSimple(torch.nn.Module):
 
     def load(self, path):
         self.model = self.model.from_pretrained(path).cuda().train()
-        self.tokenizer= self.tokenizer.from_pretrained(path)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr, eps=1e-10)
+        self.tokenizer = self.tokenizer.from_pretrained(path)
+        self.optimizer = torch.optim.Adam(
+            self.model.parameters(), lr=self.lr, eps=1e-10
+        )
 
