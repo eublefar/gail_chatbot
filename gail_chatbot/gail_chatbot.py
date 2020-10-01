@@ -31,6 +31,7 @@ class GailChatbot(Agent):
             "generator": "generator",
             "adversarial": "adversarial.bin",
         }
+        self.maxlen = 50
         self.eval_step = 0
         self.train_step = 0
         self.gen_episode_num = 0
@@ -56,8 +57,6 @@ class GailChatbot(Agent):
 
         # Hyperparameters
         self.similarity_coef = 0.2
-        self.gd_frac = 0.3
-        self.gd_frac_decay = 1/6000
         self.episode_num_log = 1
         self.episode_num_dialog_dump = 100
         self.episode_checkpoint_num = 100
@@ -102,8 +101,9 @@ class GailChatbot(Agent):
     def _get_default_params(self):
         return {
             "gail": {
-                "gd_frac": 0.5,
-                "gd_frac_decay": 1/4000,
+                "maxlen": 50,
+                "gd_frac": 0,
+                "gd_frac_decay": 1 / 4000,
                 "maxlen": 50,
                 "adversarial_lr_warmup": 1e-5,
                 "adversarial_lr": 1e-5,
@@ -129,7 +129,7 @@ class GailChatbot(Agent):
         # Same batch size as adversarial (negative + positive sample x batch_size)
         params.update({"batch_size": self.batch_size})
 
-        self.generator_policy = GptPolicy()
+        self.generator_policy = GptPolicy().eval()
         params["policy"] = self.generator_policy
         self.generator = PPO(**params)
 
@@ -228,12 +228,6 @@ class GailChatbot(Agent):
             self.eval_step += 1
         else:
             self.train_step += 1
-#             if (
-#                 self.warmup_steps
-#                 and (self.train_step % self.warmup_steps == 0)
-#                 and (self.train_step // self.warmup_steps == 1)
-#             ):
-#                 self.adversarial.set_lr(self.adversarial_lr)
 
         #  Optimize generative model
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
@@ -244,7 +238,6 @@ class GailChatbot(Agent):
         if self.update_adversarial:
             self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
 
-            
         self.gd_frac = self.gd_frac - self.gd_frac * self.gd_frac_decay
         self.gd_frac = max(self.gd_frac, 0)
         if self.train_step % self.episode_num_log == 0 and self.train_step:
@@ -258,20 +251,18 @@ class GailChatbot(Agent):
         return [{"id": self.id} for observation in observations]
 
     def update_generator_(self, dialogs_pos, dialogs_to_generate):
-#         torch.cuda.empty_cache()
+        #         torch.cuda.empty_cache()
         with torch.no_grad():
             gen_dialogs_batch = self.generate_dialog_batch(
                 dialogs_to_generate, dialogs_pos
             )
             self.force_teacher_batch(dialogs_pos)
 
-        self.generator_policy.train()
         self.generator_policy.disable_cache()
-        #             self.generator.memory.batch_size = self.generator.memory.size
-#         torch.cuda.empty_cache()
+        #         torch.cuda.empty_cache()
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
-        
+
         return gen_dialogs_batch
 
     def generate_dialog_batch(self, dialogs_to_generate, dialogs_pos):
@@ -309,22 +300,12 @@ class GailChatbot(Agent):
         episode_num: int = 0,
         max_len: int = 32,
         temp=None,
-        min_step=3
+        min_step=3,
     ):
         self.generator_policy.clear_cache()
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
-        dialogs = [
-            (
-                *dialog,
-                torch.empty(
-                    0,
-                    dtype=torch.long,
-                    #             device=self.generator_policy.get_device()
-                ),
-            )
-            for dialog in dialogs
-        ]
+        dialogs = [(*dialog, torch.empty(0, dtype=torch.long,),) for dialog in dialogs]
         prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
         for step in range(max_len):
@@ -368,11 +349,13 @@ class GailChatbot(Agent):
                 # print(transitions[i])
                 self.generator.batch_memorize(transitions)
             del actions, ids, actions_cpu, transitions
-        self.generator_policy.clear_cache()
+            self.generator_policy.clear_cache()
         return dialogs, final_transitions, episode_num
 
     def force_teacher_batch(self, dialogs_pos):
         gd_frac = int(self.batch_size * self.gd_frac)
+        if gd_frac == 0:
+            return
         dialogs_pos = dialogs_pos[:gd_frac]
         for i in range(
             (gd_frac // self.gen_sub_batch_size)
@@ -402,15 +385,7 @@ class GailChatbot(Agent):
             for dialog in dialogs
         ]
         dialogs = [
-            (
-                dialog[0],
-                dialog[1][:-1],
-                torch.empty(
-                    0,
-                    dtype=torch.long,
-                    #             device=self.generator_policy.get_device()
-                ),
-            )
+            (dialog[0], dialog[1][:-1], torch.empty(0, dtype=torch.long),)
             for dialog in dialogs
         ]
         prev_dialog = [None for dialog in dialogs]
@@ -420,7 +395,7 @@ class GailChatbot(Agent):
             if done.all():
                 break
             _ = self.generator.batch_act(
-                dialogs, done, log_prob_override=torch.ones(len(dialogs))
+                dialogs, done, log_prob_override=torch.ones(len(dialogs)) * -0.045
             ).detach()
             for i, dialog in enumerate(dialogs):
                 if done[i]:
@@ -431,20 +406,13 @@ class GailChatbot(Agent):
                 if (step == (len(actions[i]) - 1)) or (step == (max_len - 1)):
                     episode_num += 1
                     done[i] = True
-#                     self.reward_norm.eval()
                     final_transitions[i] = [
                         prev_dialog[i],
                         actions[i][step],
-                        (
-                            2
-#                             ((2 - self.rew_mean) / self.rew_std)
-#                             if self.rew_std != 0 else
-#                             (2 - self.rew_mean)
-                        ),
+                        (2),
                         done[i],
                         dialog,
                     ]
-#                     self.reward_norm.train()
                 else:
                     transitions[i] = [
                         prev_dialog[i],
@@ -457,14 +425,16 @@ class GailChatbot(Agent):
             if not all(final_transitions):
                 self.generator.batch_memorize(transitions)
             del transitions
-        self.generator_policy.clear_cache()
+            self.generator_policy.clear_cache()
         self.generator.batch_memorize(final_transitions)
         return episode_num
 
     def decode_reply(self, generated_dialogs):
         generated_dialogs_converted = []
         for persona, history, generated in generated_dialogs:
-            reply_str = self.generator_policy.tokenizer.decode(generated, skip_special_tokens=True)
+            reply_str = self.generator_policy.tokenizer.decode(
+                generated, skip_special_tokens=True
+            )
             if reply_str == "":
                 reply_str = "__SILENCE__"
             generated_dialogs_converted.append((persona, history + [reply_str]))
@@ -480,38 +450,38 @@ class GailChatbot(Agent):
 
         adequacy_scores = probs[:, 0]
 
-#         self.update_stats(adequacy_scores)        
-#         adequacy_scores = (
-#             ((adequacy_scores - self.rew_mean) / self.rew_std) 
-#             if self.rew_std != 0 else
-#             0
-#         )
-#         adequacy_scores = self.reward_norm(
-#             adequacy_scores.unsqueeze(-1)
-#         ).squeeze(-1)[:probs.shape[0]]
+        #         self.update_stats(adequacy_scores)
+        #         adequacy_scores = (
+        #             ((adequacy_scores - self.rew_mean) / self.rew_std)
+        #             if self.rew_std != 0 else
+        #             0
+        #         )
+        #         adequacy_scores = self.reward_norm(
+        #             adequacy_scores.unsqueeze(-1)
+        #         ).squeeze(-1)[:probs.shape[0]]
 
         reward_scores = adequacy_scores.cpu().detach().numpy()
 
         return reward_scores
-    
+
     def update_stats(self, adequacy_scores_for_stats):
         if self.rew_std and (self.rew_std == self.rew_std):
-            self.rew_std  = (
-                self.rew_std*(1 - self.momentum) 
+            self.rew_std = (
+                self.rew_std * (1 - self.momentum)
                 + adequacy_scores_for_stats.std() * self.momentum
             )
         else:
-            self.rew_std  = adequacy_scores_for_stats.std()
+            self.rew_std = adequacy_scores_for_stats.std()
         if self.rew_mean and (self.rew_mean == self.rew_mean):
-            self.rew_mean  = (
-                self.rew_mean*(1 - self.momentum) 
+            self.rew_mean = (
+                self.rew_mean * (1 - self.momentum)
                 + adequacy_scores_for_stats.mean() * self.momentum
             )
         else:
-            self.rew_mean  = adequacy_scores_for_stats.mean()
+            self.rew_mean = adequacy_scores_for_stats.mean()
 
     def update_adversarial_(self, dialogs_neg, dialogs_pos, gen_dialogs_batch):
-#         torch.cuda.empty_cache()
+        #         torch.cuda.empty_cache()
         dialog_neg = []
 
         loss, probs = self.adversarial.forward_contrastive(
