@@ -88,7 +88,7 @@ class GPTFineTune(Agent):
         }
 
     def _construct_model(self, path):
-        self.generator = GPTSimple()
+        self.generator = GPTSimple().train()
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["generator"])
         if os.path.isdir(adv_dir):
@@ -194,10 +194,13 @@ class GPTFineTune(Agent):
             )
             self.metrics["entropy"] = entropy
             self.metrics["accuracy"] = accuracy_score(
-                onehot.numpy(), (torch.eq(logits, logits.max(dim=1).values.unsqueeze(1))).int().numpy()
+                onehot.numpy(),
+                (torch.eq(logits, logits.max(dim=1).values.unsqueeze(1))).int().numpy(),
             )
             self.metrics["f1_score"] = f1_score(
-                onehot.numpy(), (torch.eq(logits, logits.max(dim=1).values.unsqueeze(1))).int().numpy(), average="macro"
+                onehot.numpy(),
+                (torch.eq(logits, logits.max(dim=1).values.unsqueeze(1))).int().numpy(),
+                average="macro",
             )
             self.write_metrics()
 
