@@ -92,7 +92,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
-            set_seed(15)
             logits, past_key_values, hidden_states = self.model(
                 input_ids,
                 token_type_ids=token_type_ids,

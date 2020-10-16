@@ -17,6 +17,7 @@ from gym_loop.agents.pytorch_ppo import PPO
 from tensorboardX import SummaryWriter
 import yaml
 import json
+import pprint
 
 torch.set_num_threads(8)
 
@@ -65,6 +66,7 @@ class GailChatbot(Agent):
         self.add_distractors = False
         self.dialog_dump_path = opt["model_file"] + "_dialogs"
         self.checkpoint_path = os.path.split(opt["model_file"])[0]
+        self.pp = pprint.PrettyPrinter(indent=4)
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
 
@@ -309,6 +311,7 @@ class GailChatbot(Agent):
         prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
         for step in range(max_len):
+
             transitions = [None] * len(dialogs)
             if done.all():
                 break
@@ -334,7 +337,7 @@ class GailChatbot(Agent):
                         actions_cpu[i],
                         0,
                         done[i],
-                        dialog,
+                        deepcopy(dialogs[i]),
                     ]
                 else:
                     transitions[i] = [
@@ -342,14 +345,14 @@ class GailChatbot(Agent):
                         actions_cpu[i],
                         0,
                         done[i],
-                        dialog,
+                        deepcopy(dialogs[i]),
                     ]
                     global_step += 1
             if not all(final_transitions):
-                # print(transitions[i])
                 self.generator.batch_memorize(transitions)
             del actions, ids, actions_cpu, transitions
-            self.generator_policy.clear_cache()
+
+        self.generator_policy.clear_cache()
         return dialogs, final_transitions, episode_num
 
     def force_teacher_batch(self, dialogs_pos):
@@ -411,7 +414,7 @@ class GailChatbot(Agent):
                         actions[i][step],
                         (2),
                         done[i],
-                        dialog,
+                        deepcopy(dialogs[i]),
                     ]
                 else:
                     transitions[i] = [
@@ -419,13 +422,13 @@ class GailChatbot(Agent):
                         actions[i][step],
                         0,
                         done[i],
-                        dialog,
+                        deepcopy(dialogs[i]),
                     ]
                     global_step += 1
             if not all(final_transitions):
                 self.generator.batch_memorize(transitions)
             del transitions
-            self.generator_policy.clear_cache()
+        self.generator_policy.clear_cache()
         self.generator.batch_memorize(final_transitions)
         return episode_num
 

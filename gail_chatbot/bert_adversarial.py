@@ -20,9 +20,7 @@ class BertAdversarial(torch.nn.Module):
     def __init__(self, lr=4e-6, mixed_precision=True):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("roberta-base")
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            "roberta-base"
-        )
+        self.model = AutoModelForSequenceClassification.from_pretrained("roberta-base")
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         if MIXED_PREC:
             self.scaler = GradScaler()
@@ -41,7 +39,7 @@ class BertAdversarial(torch.nn.Module):
             print("dialogs_pos", dialogs_pos)
             print("dialogs_gen", dialogs_gen)
             raise RuntimeError("Paired dialog contexts are different")
-        
+
         token_ids_gen = token_ids.narrow(0, 0, len(dialogs_gen))
         token_ids_pos = token_ids.narrow(0, len(dialogs_gen), len(dialogs_pos))
 
@@ -94,37 +92,39 @@ class BertAdversarial(torch.nn.Module):
                 positions_pos = position_ids_pos[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
-#                 print(self.model)
-#                 print(ids_gen)
-#                 print(ids_pos)
+                #                 print(self.model)
+                #                 print(ids_gen)
+                #                 print(ids_pos)
                 outp_gen = self.model(
                     input_ids=ids_gen,
                     attention_mask=mask_gen,
-#                     token_type_ids=types_gen,
+                    #                     token_type_ids=types_gen,
                     position_ids=positions_gen,
                 )
 
                 outp_pos = self.model(
                     input_ids=ids_pos,
                     attention_mask=mask_pos,
-#                     token_type_ids=types_pos,
+                    #                     token_type_ids=types_pos,
                     position_ids=positions_pos,
                 )
-#                 print(outp_pos)
-#                 labels = torch.stack(
-#                     [
-#                         torch.zeros_like(outp_gen[0][:, 1]),
-#                         torch.ones_like(outp_pos[0][:, 1]),
-#                     ],
-#                     dim=1,
-#                 ).long()
-                
+                #                 print(outp_pos)
+                #                 labels = torch.stack(
+                #                     [
+                #                         torch.zeros_like(outp_gen[0][:, 1]),
+                #                         torch.ones_like(outp_pos[0][:, 1]),
+                #                     ],
+                #                     dim=1,
+                #                 ).long()
+
                 logits = torch.stack([outp_gen[0][:, 1], outp_pos[0][:, 1]], dim=1)
-                loss = torch.nn.functional.cross_entropy(logits, torch.ones_like(outp_pos[0][:, 1]).long())
+                loss = torch.nn.functional.cross_entropy(
+                    logits, torch.ones_like(outp_pos[0][:, 1]).long()
+                )
                 if backprop:
                     (self.scaler.scale(loss / iters)).backward()
             probs = torch.softmax(logits.float(), dim=1)
-            
+
             loss_return += (loss.float() / iters).cpu().item()
             probs_return.append(probs)
         probs = torch.cat(probs_return, dim=0)
