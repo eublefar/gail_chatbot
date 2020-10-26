@@ -16,12 +16,12 @@ import torch.nn.functional as F
 from torch.distributions import MultivariateNormal, Categorical
 from torch.nn.utils.rnn import pad_sequence
 
-# try:
-#     from torch.cuda.amp import autocast
+try:
+    from torch.cuda.amp import autocast
 
-#     MIXED_PREC = True
-# except ImportError as e:
-MIXED_PREC = False
+    MIXED_PREC = True
+except ImportError as e:
+    MIXED_PREC = False
 
 
 class GptPolicy(torch.nn.Module, BasePolicy):
@@ -96,20 +96,21 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
-                past=past_key_values,
+                past_key_values=past_key_values,
                 output_hidden_states=True,
             )
-            seq_last_id = (torch.LongTensor(seqlen) - 1).view([-1, 1, 1])
+            seq_last_id = (torch.LongTensor(seqlen) - 1).view([-1, 1, 1]).cuda()
             logits = logits.gather(dim=1, index=seq_last_id.expand_as(logits))[:, 0, :]
             features = hidden_states[-1].gather(
                 dim=1, index=seq_last_id.expand_as(hidden_states[-1])
             )[:, 0, :]
             values = self.value_head(features.squeeze(1))
-
+            distr = Categorical(logits=logits)
+            
         if self.use_cache:
             self.cache = past_key_values
 
-        distr = Categorical(logits=logits)
+        
         return {
             "action_distribution": distr,
             "values": values.squeeze(-1),

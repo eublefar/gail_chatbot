@@ -54,7 +54,7 @@ class GailChatbot(Agent):
         self.adversarial_lr = 1e-5
         self.rew_mean = None
         self.rew_std = None
-        self.momentum = 0.1
+        self.momentum = 0.02
 
         # Hyperparameters
         self.similarity_coef = 0.2
@@ -234,12 +234,18 @@ class GailChatbot(Agent):
         #  Optimize generative model
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
         gen_dialogs_batch = []
-        if self.update_generator:
-            gen_dialogs_batch = self.update_generator_(dialogs_pos, dialogs_to_generate)
+        
+        try:
+            if self.update_generator:
+                gen_dialogs_batch = self.update_generator_(dialogs_pos, dialogs_to_generate)
 
-        if self.update_adversarial:
-            self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
-
+            if self.update_adversarial:
+                self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
+        except RuntimeError as e:
+            if "CUDA" in str(e):
+                print("CUDA error, continueing")
+            else:
+                raise e
         self.gd_frac = self.gd_frac - self.gd_frac * self.gd_frac_decay
         self.gd_frac = max(self.gd_frac, 0)
         if self.train_step % self.episode_num_log == 0 and self.train_step:
@@ -261,7 +267,8 @@ class GailChatbot(Agent):
             self.force_teacher_batch(dialogs_pos)
 
         self.generator_policy.disable_cache()
-        #         torch.cuda.empty_cache()
+#         torch.cuda.empty_cache()
+        self.generator.memory.batch_size = self.gpt_update_batch_size
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
 
@@ -356,7 +363,7 @@ class GailChatbot(Agent):
         return dialogs, final_transitions, episode_num
 
     def force_teacher_batch(self, dialogs_pos):
-        gd_frac = int(self.batch_size * self.gd_frac)
+        gd_frac = round(self.batch_size * self.gd_frac)
         if gd_frac == 0:
             return
         dialogs_pos = dialogs_pos[:gd_frac]
@@ -453,12 +460,11 @@ class GailChatbot(Agent):
 
         adequacy_scores = probs[:, 0]
 
-        #         self.update_stats(adequacy_scores)
-        #         adequacy_scores = (
-        #             ((adequacy_scores - self.rew_mean) / self.rew_std)
-        #             if self.rew_std != 0 else
-        #             0
-        #         )
+        self.update_stats(adequacy_scores)
+        adequacy_scores = (
+            ((adequacy_scores - self.rew_mean) / self.rew_std)
+            if self.rew_std != 0 else 0
+        )
         #         adequacy_scores = self.reward_norm(
         #             adequacy_scores.unsqueeze(-1)
         #         ).squeeze(-1)[:probs.shape[0]]
@@ -491,12 +497,6 @@ class GailChatbot(Agent):
             gen_dialogs_batch, dialogs_pos, sub_batch=self.adv_sub_batch_size
         )
 
-        p = probs[:, 0].mean()
-        diff = min(max(0.5 - p, 0), 0.5)
-        new_lr = -0.000024975 * diff + 0.00001
-        new_lr = max(new_lr, 1e-8)
-        self.adversarial.set_lr(new_lr)
-        self.metrics["lr"] = new_lr
         self.metrics["pos_logits"] = probs[:, 1].mean()
         self.metrics["gen_logits"] = probs[:, 0].mean() if self.update_generator else -1
         self.metrics["adv_loss"] = loss
