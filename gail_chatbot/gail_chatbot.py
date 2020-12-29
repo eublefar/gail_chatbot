@@ -1,34 +1,34 @@
 """Main module."""
-import numpy as np
 from typing import Iterable, Dict, Tuple, List, Any
-from parlai.core.agents import Agent
-from parlai.core.message import Message
-from random import sample
+
+import numpy as np
 import torch
-from tensorboardX import SummaryWriter
 import os
-from copy import deepcopy
-from torch.distributions import Categorical
-from collections import deque
 import json
-from .gpt_policy import GptPolicy
-from .bert_adversarial import BertAdversarial, MIXED_PREC
-from gym_loop.agents.pytorch_ppo import PPO
-from tensorboardX import SummaryWriter
 import yaml
 import json
 import pprint
+
+from tensorboardX import SummaryWriter
+from copy import deepcopy
+from parlai.core.message import Message
+
+from gail_chatbot.phrases import UNCERTAINTY_PHRASES
+from gail_chatbot.gpt_policy import GptPolicy
+from gail_chatbot.bert_adversarial import BertAdversarial, MIXED_PREC
+from gail_chatbot.chatbot_base import ConvaiChatbotBase
+from gym_loop.agents.pytorch_ppo import PPO
 
 torch.set_num_threads(8)
 # MAKE SURE THAT N_STEPS IS SET CORRECTLY SO THAT ALL BATCH_SIZE//SUBBATCHSIZE * 2 ELEMENTS FIT IN MEMORY
 
 
-class GailChatbot(Agent):
-    """
-    
+class GailChatbot(ConvaiChatbotBase):
+    """Chatbot that learns ConvAI task using GAIL
     """
 
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
+        super().__init__(opt, shared)
         self.id = "GailChatbot"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.MODEL_SUBPATHS = {
@@ -61,8 +61,6 @@ class GailChatbot(Agent):
         self.add_distractors = False
 
         # Counters
-        self.eval_step = 0
-        self.train_step = 0
         self.gen_episode_num = 0
 
         # Paths
@@ -83,9 +81,6 @@ class GailChatbot(Agent):
 
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
-
-        if opt["task"] != "convai2":
-            raise ValueError("Only works on convai task")
 
         if shared:
             self._create_from_shared(shared)
@@ -180,73 +175,10 @@ class GailChatbot(Agent):
             **{"generator": self.generator, "adversarial": self.adversarial}
         )
 
-    def observe(self, observation: Message):
-        if "text" not in observation:
-            self.reset()
-            return observation
-        res = dict(observation)
-        if not self.persona:
-            res["text"] = self._extract_persona(observation["text"])
-        if self.last_label is not None:
-            self.history.append(self.last_label)
-        self.history.append(res["text"])
-
-        self.last_label = (
-            observation["labels"][0]
-            if "labels" in observation
-            else observation["eval_labels"][0]
-        )
-        self.episode_done = observation["episode_done"]
-        neg_obs = list(observation["label_candidates"])
-        neg_obs.remove(self.last_label)
-        neg_sample = sample(neg_obs, 2)
-        res["text"] = [
-            (self.persona, self.history),  # Generate sample
-            (self.persona, self.history + [self.last_label]),  # Positive sample
-            (self.persona, self.history + [neg_sample[0]]),  # Negative sample
-        ]
-        res[("labels" if "labels" in observation else "eval_labels")] = [
-            0,
-            1,
-            0,
-        ]
-        res["generate_mask"] = [
-            1,
-            0,
-            0,
-        ]
-        self.last_input = observation
-        if self.episode_done:
-            self.reset()
-        return res
-
-    def _extract_persona(self, text):
-        lines = text.split("\n")
-        persona = [
-            line.replace("your persona: ", "")
-            for line in lines
-            if "your persona: " in line
-        ]
-        if not persona:
-            raise ValueError("Tried to parse persona but none found")
-        self.persona = "\n".join(persona)
-        return "\n".join([line for line in lines if "your persona: " not in line])
-
-    def act(self):
-        raise NotImplementedError()
-
     def batch_act(self, observations: List[Message]):
-        self.is_eval = any(
-            ["eval_labels" in observation for observation in observations]
+        dialogs_neg, dialogs_pos, dialogs_to_generate = super().batch_act(
+            self, observations
         )
-
-        if self.is_eval:
-            self.eval_step += 1
-        else:
-            self.train_step += 1
-
-        #  Optimize generative model
-        dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
         gen_dialogs_batch = []
 
         try:
@@ -259,7 +191,7 @@ class GailChatbot(Agent):
                 self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
         except RuntimeError as e:
             if "CUDA" in str(e):
-                print("CUDA error, continueing")
+                print("CUDA error, continuing")
             else:
                 raise e
         self.gd_frac = self.gd_frac - self.gd_frac * self.gd_frac_decay
@@ -272,7 +204,7 @@ class GailChatbot(Agent):
         ) and self.train_step != 0:
             self.checkpoint(gen_dialogs_batch)
 
-        return [{"id": self.id} for observation in observations]
+        return [{"id": self.id} for _ in observations]
 
     def update_generator_(self, dialogs_pos, dialogs_to_generate):
         #         torch.cuda.empty_cache()
@@ -559,38 +491,10 @@ class GailChatbot(Agent):
         ) as dialog_file:
             json.dump(dialogs, dialog_file)
 
-    def flatten(
-        self, observations: List[Message]
-    ) -> Tuple[
-        List[Tuple[str, List[str]]],
-        List[Tuple[str, List[str]]],
-        List[Tuple[str, List[str]]],
-    ]:
-        """Split messages into dialogs"""
-        dialogs_to_generate = []
-        dialogs_neg = []
-        dialogs_pos = []
-        for observation in observations:
-            for i, dialog in enumerate(observation["text"]):
-                if observation["generate_mask"][i]:
-                    dialogs_to_generate.append(dialog)
-                elif observation["labels"][i]:
-                    dialogs_pos.append(dialog)
-                else:
-                    dialogs_neg.append(dialog)
-
-        return dialogs_neg, dialogs_pos, dialogs_to_generate
-
     def __del__(self):
         #         self.checkpoint([])
         self.writer.close()
         super().__del__()
-
-    def reset(self):
-        super().reset()
-        self.history = []
-        self.last_label = None
-        self.persona = None
 
     def save(self, path: str = None):
         super().save(path=path)

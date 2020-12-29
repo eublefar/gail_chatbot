@@ -9,7 +9,7 @@ with open("README.rst") as readme_file:
 
 requirements = [
     "Click>=7.0",
-    "transformers==3.0.2",
+    "transformers==4.1.1",
     "tensorboardX==2.0",
     "parlai==0.1.20200716",
     "numpy==1.18.5",
