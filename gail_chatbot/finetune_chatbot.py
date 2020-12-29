@@ -37,6 +37,8 @@ class GPTFineTune(ConvaiChatbotBase):
         self.metrics = {}
         self.is_eval = False
 
+        self.checkpoint_overwrite = False
+
         # Hyperparameters
         self.episode_num_log = 1
         self.episode_num_dialog_dump = 100
@@ -192,9 +194,9 @@ class GPTFineTune(ConvaiChatbotBase):
             )
 
     def checkpoint(self):
-        gen_p = os.path.join(
-            self.checkpoint_path, self.MODEL_SUBPATHS["generator"]
-        ) + "_{}".format(self.train_step)
+        gen_p = os.path.join(self.checkpoint_path, self.MODEL_SUBPATHS["generator"]) + (
+            "_{}".format(self.train_step) if self.checkpoint_overwrite else "_ck"
+        )
         if not os.path.isdir(gen_p):
             os.mkdir(gen_p)
         self.generator.save(gen_p)
