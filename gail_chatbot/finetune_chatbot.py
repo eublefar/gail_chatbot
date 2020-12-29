@@ -1,27 +1,25 @@
 """Main module."""
-import numpy as np
 from typing import Iterable, Dict, Tuple, List, Any
-from parlai.core.agents import Agent
-from parlai.core.message import Message
-from random import sample
+
 import torch
-from tensorboardX import SummaryWriter
 import os
-from copy import deepcopy
+import yaml
+
+from random import sample
 from sklearn.metrics import average_precision_score, accuracy_score, f1_score
 from torch.distributions import Categorical
-from collections import deque
-import json
-from .gpt_lm import GPTSimple, MIXED_PREC
 from tensorboardX import SummaryWriter
-import yaml
-import json
+from parlai.core.agents import Agent
+from parlai.core.message import Message
 
-torch.set_num_threads(8)
+from gail_chatbot.gpt_lm import GPTSimple
+from gail_chatbot.chatbot_base import ConvaiChatbotBase
 
 
-class GPTFineTune(Agent):
+class GPTFineTune(ConvaiChatbotBase):
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
+        super().__init__(opt, shared)
+
         self.id = "GPTFineTune"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.MODEL_SUBPATHS = {
@@ -31,8 +29,6 @@ class GPTFineTune(Agent):
         self.train_step = 0
         self.gen_episode_num = 0
         self.opt = opt
-        self.persona = None
-        self.history = []
         self.last_label = None
         self.last_input = None
         self.generator = None
@@ -103,46 +99,6 @@ class GPTFineTune(Agent):
     def share(self) -> Dict[str, Any]:
         return dict(**super().share(), **{"generator": self.generator,})
 
-    def observe(self, observation: Message):
-        if "text" not in observation:
-            self.reset()
-            return observation
-        res = dict(observation)
-        if not self.persona:
-            res["text"] = self._extract_persona(observation["text"])
-        if self.last_label is not None:
-            self.history.append(self.last_label)
-        self.history.append(res["text"])
-
-        self.last_label = (
-            observation["labels"][0]
-            if "labels" in observation
-            else observation["eval_labels"][0]
-        )
-        self.episode_done = observation["episode_done"]
-        neg_obs = list(observation["label_candidates"])
-        neg_obs.remove(self.last_label)
-        neg_sample = sample(neg_obs, 2)
-        res["text"] = [
-            (self.persona, self.history),  # Generate sample
-            (self.persona, self.history + [self.last_label]),  # Positive sample
-            (self.persona, self.history + [neg_sample[0]]),  # Negative sample
-        ]
-        res[("labels" if "labels" in observation else "eval_labels")] = [
-            0,
-            1,
-            0,
-        ]
-        res["generate_mask"] = [
-            1,
-            0,
-            0,
-        ]
-        self.last_input = observation
-        if self.episode_done:
-            self.reset()
-        return res
-
     def _extract_persona(self, text):
         lines = text.split("\n")
         persona = [
@@ -159,17 +115,7 @@ class GPTFineTune(Agent):
         raise NotImplementedError()
 
     def batch_act(self, observations: List[Message]):
-        self.is_eval = any(
-            ["eval_labels" in observation for observation in observations]
-        )
-
-        if self.is_eval:
-            self.eval_step += 1
-        else:
-            self.train_step += 1
-
-        #  Optimize generative model
-        dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
+        dialogs_neg, dialogs_pos, dialogs_to_generate = super().batch_act(observations)
 
         logits, labels, loss = self.generator.fit_batch(
             dialogs_pos, sub_batch=self.sub_batch_size
@@ -241,38 +187,10 @@ class GPTFineTune(Agent):
             os.mkdir(gen_p)
         self.generator.save(gen_p)
 
-    def flatten(
-        self, observations: List[Message]
-    ) -> Tuple[
-        List[Tuple[str, List[str]]],
-        List[Tuple[str, List[str]]],
-        List[Tuple[str, List[str]]],
-    ]:
-        """Split messages into dialogs"""
-        dialogs_to_generate = []
-        dialogs_neg = []
-        dialogs_pos = []
-        for observation in observations:
-            for i, dialog in enumerate(observation["text"]):
-                if observation["generate_mask"][i]:
-                    dialogs_to_generate.append(dialog)
-                elif observation["labels"][i]:
-                    dialogs_pos.append(dialog)
-                else:
-                    dialogs_neg.append(dialog)
-
-        return dialogs_neg, dialogs_pos, dialogs_to_generate
-
     def __del__(self):
         self.checkpoint()
         self.writer.close()
         super().__del__()
-
-    def reset(self):
-        super().reset()
-        self.history = []
-        self.last_label = None
-        self.persona = None
 
     def save(self, path: str = None):
         super().save(path=path)
