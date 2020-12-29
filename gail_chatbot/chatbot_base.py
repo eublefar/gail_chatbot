@@ -36,7 +36,11 @@ class ConvaiChatbotBase(Agent):
             return observation
 
         neg_obs = list(observation["label_candidates"])
-        neg_obs.remove(self.last_label)
+        neg_obs.remove(
+            observation["labels"][0]
+            if "labels" in observation
+            else observation["eval_labels"][0]
+        )
         neg_sample = sample(neg_obs, 2)
 
         res = dict(observation)
