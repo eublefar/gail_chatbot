@@ -117,9 +117,21 @@ class GPTFineTune(ConvaiChatbotBase):
     def batch_act(self, observations: List[Message]):
         dialogs_neg, dialogs_pos, dialogs_to_generate = super().batch_act(observations)
 
-        logits, labels, loss = self.generator.fit_batch(
-            dialogs_pos, sub_batch=self.sub_batch_size
-        )
+        run = True
+        bs = self.sub_batch_size
+        while run:
+            try:
+                run = False
+                logits, labels, loss = self.generator.fit_batch(
+                    dialogs_pos, sub_batch=bs
+                )
+            except Exception as e:
+                if "CUDA" in str(e):
+                    print("CUDA error, reducing batch_size")
+                    bs //= 2
+                    run = True
+                else:
+                    raise e
 
         if self.train_step % self.episode_num_log == 0 and self.train_step:
             self.metrics["loss"] = loss
