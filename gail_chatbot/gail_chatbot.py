@@ -20,11 +20,14 @@ import json
 import pprint
 
 torch.set_num_threads(8)
-
 # MAKE SURE THAT N_STEPS IS SET CORRECTLY SO THAT ALL BATCH_SIZE//SUBBATCHSIZE * 2 ELEMENTS FIT IN MEMORY
 
 
 class GailChatbot(Agent):
+    """
+    
+    """
+
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
         self.id = "GailChatbot"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -32,31 +35,23 @@ class GailChatbot(Agent):
             "generator": "generator",
             "adversarial": "adversarial.bin",
         }
-        self.maxlen = 50
-        self.eval_step = 0
-        self.train_step = 0
-        self.gen_episode_num = 0
         self.opt = opt
-        self.persona = None
-        self.history = []
-        self.last_label = None
-        self.last_input = None
-        self.lr_updated = False
+
+        # Neural nets
         self.generator = None
         self.adversarial = None
-        self.batch_size = opt["batchsize"]
-        self.adv_sub_batch_size = 8
+
+        # Batch sizes
+        self.batch_size = opt["batchsize"]  # batch size of gradient update
+        self.adv_sub_batch_size = 8  # actual batch sizes (gradient accumulation)
         self.gen_sub_batch_size = 8
         self.gpt_update_batch_size = 8
-        self.metrics = {}
-        self.is_eval = False
-        self.warmup_steps = 2
-        self.adversarial_lr = 1e-5
-        self.rew_mean = None
-        self.rew_std = None
-        self.momentum = 0.02
 
         # Hyperparameters
+        self.maxlen = 50
+        self.momentum = 0.02
+        self.warmup_steps = 2
+        self.adversarial_lr = 1e-5
         self.similarity_coef = 0.2
         self.episode_num_log = 1
         self.episode_num_dialog_dump = 100
@@ -64,9 +59,28 @@ class GailChatbot(Agent):
         self.update_generator = True
         self.update_adversarial = True
         self.add_distractors = False
+
+        # Counters
+        self.eval_step = 0
+        self.train_step = 0
+        self.gen_episode_num = 0
+
+        # Paths
         self.dialog_dump_path = opt["model_file"] + "_dialogs"
         self.checkpoint_path = os.path.split(opt["model_file"])[0]
         self.pp = pprint.PrettyPrinter(indent=4)
+
+        # Utility
+        self.persona = None
+        self.history = []
+        self.last_label = None
+        self.last_input = None
+        self.lr_updated = False
+        self.metrics = {}
+        self.is_eval = False
+        self.rew_mean = None
+        self.rew_std = None
+
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
 
@@ -331,11 +345,13 @@ class GailChatbot(Agent):
                 if done[i]:
                     continue
                 prev_dialog[i] = deepcopy(dialog)
+
                 if dialog[2].nelement() != 0:
                     new_utterance = torch.cat([dialog[2], ids[i].unsqueeze(-1)], dim=0)
                     dialogs[i] = (*dialog[:-1], new_utterance)
                 else:
                     dialogs[i] = (*dialog[:-1], ids[i].unsqueeze(-1))
+
                 if ids[i] == self.generator_policy.tokenizer.eos_token_id or (
                     step == (max_len - 1)
                 ):
