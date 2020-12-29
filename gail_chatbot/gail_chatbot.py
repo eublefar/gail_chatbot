@@ -13,7 +13,6 @@ from tensorboardX import SummaryWriter
 from copy import deepcopy
 from parlai.core.message import Message
 
-from gail_chatbot.phrases import UNCERTAINTY_PHRASES
 from gail_chatbot.gpt_policy import GptPolicy
 from gail_chatbot.bert_adversarial import BertAdversarial, MIXED_PREC
 from gail_chatbot.chatbot_base import ConvaiChatbotBase
@@ -69,10 +68,6 @@ class GailChatbot(ConvaiChatbotBase):
         self.pp = pprint.PrettyPrinter(indent=4)
 
         # Utility
-        self.persona = None
-        self.history = []
-        self.last_label = None
-        self.last_input = None
         self.lr_updated = False
         self.metrics = {}
         self.is_eval = False
@@ -176,9 +171,7 @@ class GailChatbot(ConvaiChatbotBase):
         )
 
     def batch_act(self, observations: List[Message]):
-        dialogs_neg, dialogs_pos, dialogs_to_generate = super().batch_act(
-            self, observations
-        )
+        dialogs_neg, dialogs_pos, dialogs_to_generate = super().batch_act(observations)
         gen_dialogs_batch = []
 
         try:

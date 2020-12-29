@@ -1,7 +1,12 @@
-from typing import Iterable, Dict, Tuple, List, Any
+from typing import Dict, Tuple, List, Any
+
+import string
+
 from parlai.core.agents import Agent
 from parlai.core.message import Message
-from random import sample
+from random import randint, sample, uniform, choice
+
+from gail_chatbot.phrases import UNCERTAINTY_PHRASES
 
 
 class ConvaiChatbotBase(Agent):
@@ -16,26 +21,55 @@ class ConvaiChatbotBase(Agent):
         self.eval_step = 0
         self.train_step = 0
 
+        self.persona = None
+        self.history = []
+        self.last_label = None
+        self.last_history = None
+
+        self.noise_frac = 0.3
+        self.distractor_frac = 0.6
+
     def observe(self, observation: Message):
+
         if "text" not in observation:
             self.reset()
             return observation
-        res = dict(observation)
-        if not self.persona:
-            res["text"] = self._extract_persona(observation["text"])
-        if self.last_label is not None:
-            self.history.append(self.last_label)
-        self.history.append(res["text"])
 
-        self.last_label = (
-            observation["labels"][0]
-            if "labels" in observation
-            else observation["eval_labels"][0]
-        )
-        self.episode_done = observation["episode_done"]
         neg_obs = list(observation["label_candidates"])
         neg_obs.remove(self.last_label)
         neg_sample = sample(neg_obs, 2)
+
+        res = dict(observation)
+
+        if not self.persona:
+            res["text"] = self._extract_persona(observation["text"])
+
+        if self.last_label is not None:
+            self.history.append(self.last_label)
+
+        if uniform(0, 1) < self.noise_frac:
+            if uniform(0, 1) < self.distractor_frac:
+                self.history.append(neg_sample[1])
+            else:
+                letters = string.ascii_letters
+                randstr = " ".join(
+                    [
+                        "".join(choice(letters) for i in range(randint(2, 10)))
+                        for _ in range(randint(2, 7))
+                    ]
+                )
+                self.history.append(randstr)
+
+            self.last_label = choice(UNCERTAINTY_PHRASES)
+        else:
+            self.history.append(res["text"])
+
+            self.last_label = (
+                observation["labels"][0]
+                if "labels" in observation
+                else observation["eval_labels"][0]
+            )
+        self.episode_done = observation["episode_done"]
         res["text"] = [
             (self.persona, self.history),  # Generate sample
             (self.persona, self.history + [self.last_label]),  # Positive sample
@@ -51,7 +85,6 @@ class ConvaiChatbotBase(Agent):
             0,
             0,
         ]
-        self.last_input = observation
         if self.episode_done:
             self.reset()
         return res
