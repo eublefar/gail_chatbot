@@ -234,10 +234,12 @@ class GailChatbot(Agent):
         #  Optimize generative model
         dialogs_neg, dialogs_pos, dialogs_to_generate = self.flatten(observations)
         gen_dialogs_batch = []
-        
+
         try:
             if self.update_generator:
-                gen_dialogs_batch = self.update_generator_(dialogs_pos, dialogs_to_generate)
+                gen_dialogs_batch = self.update_generator_(
+                    dialogs_pos, dialogs_to_generate
+                )
 
             if self.update_adversarial:
                 self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
@@ -267,7 +269,7 @@ class GailChatbot(Agent):
             self.force_teacher_batch(dialogs_pos)
 
         self.generator_policy.disable_cache()
-#         torch.cuda.empty_cache()
+        #         torch.cuda.empty_cache()
         self.generator.memory.batch_size = self.gpt_update_batch_size
         self.generator.update(self.gen_episode_num)
         self.generator_policy.enable_cache()
@@ -463,7 +465,8 @@ class GailChatbot(Agent):
         self.update_stats(adequacy_scores)
         adequacy_scores = (
             ((adequacy_scores - self.rew_mean) / self.rew_std)
-            if self.rew_std != 0 else 0
+            if self.rew_std != 0
+            else 0
         )
         #         adequacy_scores = self.reward_norm(
         #             adequacy_scores.unsqueeze(-1)

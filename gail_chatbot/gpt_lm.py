@@ -261,4 +261,3 @@ class GPTSimple(torch.nn.Module):
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.lr, eps=1e-10
         )
-

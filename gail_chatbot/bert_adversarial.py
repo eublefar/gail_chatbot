@@ -238,4 +238,3 @@ class BertAdversarial(torch.nn.Module):
             history_mask,
             history_mask.cumsum(dim=1) - 1,
         )
-
