@@ -92,12 +92,17 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
-            logits, past_key_values, hidden_states = self.model(
+            outp = self.model(
                 input_ids,
                 token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
+            )
+            logits, past_key_values, hidden_states = (
+                outp["logits"],
+                outp["past_key_values"],
+                outp["hidden_states"],
             )
             seq_last_id = (torch.LongTensor(seqlen) - 1).view([-1, 1, 1]).cuda()
             logits = logits.gather(dim=1, index=seq_last_id.expand_as(logits))[:, 0, :]

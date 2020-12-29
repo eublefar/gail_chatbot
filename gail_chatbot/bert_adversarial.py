@@ -68,29 +68,29 @@ class BertAdversarial(torch.nn.Module):
             with autocast() if MIXED_PREC else suppress():
 
                 ids_gen = token_ids_gen[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
                 mask_gen = attention_mask_gen[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
                 types_gen = token_type_ids_gen[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
                 positions_gen = position_ids_gen[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
 
                 ids_pos = token_ids_pos[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
                 mask_pos = attention_mask_pos[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
                 types_pos = token_type_ids_pos[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
                 positions_pos = position_ids_pos[lower:upper].to(
-                    self.get_device(), non_blocking=False
+                    self.get_device(), non_blocking=True
                 )
                 #                 print(self.model)
                 #                 print(ids_gen)
