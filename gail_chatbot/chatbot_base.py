@@ -29,6 +29,9 @@ class ConvaiChatbotBase(Agent):
         self.noise_frac = 0.3
         self.distractor_frac = 0.6
 
+        self.utt_queue = []
+        self.resp_queue = []
+
     def observe(self, observation: Message):
 
         if "text" not in observation:
@@ -52,6 +55,7 @@ class ConvaiChatbotBase(Agent):
             self.history.append(self.last_label)
 
         if uniform(0, 1) < self.noise_frac:
+
             if uniform(0, 1) < self.distractor_frac:
                 self.history.append(neg_sample[1])
             else:
@@ -65,14 +69,33 @@ class ConvaiChatbotBase(Agent):
                 self.history.append(randstr)
 
             self.last_label = choice(UNCERTAINTY_PHRASES)
-        else:
-            self.history.append(res["text"])
 
-            self.last_label = (
+            self.utt_queue.append(res["text"])
+            self.resp_queue.append(
                 observation["labels"][0]
                 if "labels" in observation
                 else observation["eval_labels"][0]
             )
+        else:
+            if self.utt_queue:
+                self.utt_queue.append(res["text"])
+                self.resp_queue.append(
+                    observation["labels"][0]
+                    if "labels" in observation
+                    else observation["eval_labels"][0]
+                )
+
+                self.history.append(self.utt_queue.pop(0))
+
+                self.last_label = self.resp_queue.pop(0)
+            else:
+                self.history.append(res["text"])
+
+                self.last_label = (
+                    observation["labels"][0]
+                    if "labels" in observation
+                    else observation["eval_labels"][0]
+                )
         self.episode_done = observation["episode_done"]
         res["text"] = [
             (self.persona, self.history),  # Generate sample
@@ -148,3 +171,5 @@ class ConvaiChatbotBase(Agent):
         self.history = []
         self.last_label = None
         self.persona = None
+        self.resp_queue = []
+        self.utt_queue = []
