@@ -468,13 +468,13 @@ class GailChatbot(ConvaiChatbotBase):
     def checkpoint(self, dialogs):
         gen_p = os.path.join(
             self.checkpoint_path, self.MODEL_SUBPATHS["generator"]
-        ) + "_{}".format(self.train_step)
+        ) + "_{}".format(0)
         if not os.path.isdir(gen_p):
             os.mkdir(gen_p)
         self.generator_policy.save(gen_p)
         adv_p = os.path.join(
             self.checkpoint_path, self.MODEL_SUBPATHS["adversarial"]
-        ) + "_{}".format(self.train_step)
+        ) + "_{}".format(0)
         torch.save(self.adversarial.state_dict(), adv_p)
         with open(
             os.path.join(

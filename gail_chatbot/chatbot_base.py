@@ -25,6 +25,7 @@ class ConvaiChatbotBase(Agent):
         self.history = []
         self.last_label = None
         self.last_history = None
+        self.noise_happened = False
 
         self.noise_frac = 0.3
         self.distractor_frac = 0.6
@@ -54,8 +55,8 @@ class ConvaiChatbotBase(Agent):
         if self.last_label is not None:
             self.history.append(self.last_label)
 
-        if uniform(0, 1) < self.noise_frac:
-
+        if uniform(0, 1) < self.noise_frac and not self.noise_happened:
+            self.noise_happened = True
             if uniform(0, 1) < self.distractor_frac:
                 self.history.append(neg_sample[1])
             else:
@@ -173,3 +174,4 @@ class ConvaiChatbotBase(Agent):
         self.persona = None
         self.resp_queue = []
         self.utt_queue = []
+        self.noise_happened = False
