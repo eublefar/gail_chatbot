@@ -92,20 +92,18 @@ class BertAdversarial(torch.nn.Module):
                 positions_pos = position_ids_pos[lower:upper].to(
                     self.get_device(), non_blocking=True
                 )
-                #                 print(self.model)
-                #                 print(ids_gen)
-                #                 print(ids_pos)
+
                 outp_gen = self.model(
                     input_ids=ids_gen,
                     attention_mask=mask_gen,
-                    #                     token_type_ids=types_gen,
+                    token_type_ids=types_gen,
                     position_ids=positions_gen,
                 )
 
                 outp_pos = self.model(
                     input_ids=ids_pos,
                     attention_mask=mask_pos,
-                    #                     token_type_ids=types_pos,
+                    token_type_ids=types_pos,
                     position_ids=positions_pos,
                 )
                 #                 print(outp_pos)

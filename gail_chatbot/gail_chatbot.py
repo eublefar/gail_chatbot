@@ -58,6 +58,7 @@ class GailChatbot(ConvaiChatbotBase):
         self.update_generator = True
         self.update_adversarial = True
         self.add_distractors = False
+        self.distract_frac = 0.2
 
         # Counters
         self.gen_episode_num = 0
@@ -124,6 +125,7 @@ class GailChatbot(ConvaiChatbotBase):
                 "update_generator": True,
                 "update_adversarial": True,
                 "warmup_steps": 1,
+                "distract_frac": 0.2,
             },
             "generator_agent": PPO.get_default_parameters(),
         }
@@ -209,8 +211,11 @@ class GailChatbot(ConvaiChatbotBase):
 
         self.generator_policy.disable_cache()
         #         torch.cuda.empty_cache()
-        self.generator.memory.batch_size = self.gpt_update_batch_size
-        self.generator.update(self.gen_episode_num)
+        if self.train_step > self.warmup_steps:
+            self.generator.memory.batch_size = self.gpt_update_batch_size
+            self.generator.update(self.gen_episode_num)
+        else:
+            self.generator.memory.empty()
         self.generator_policy.enable_cache()
 
         return gen_dialogs_batch
@@ -435,10 +440,12 @@ class GailChatbot(ConvaiChatbotBase):
 
     def update_adversarial_(self, dialogs_neg, dialogs_pos, gen_dialogs_batch):
         #         torch.cuda.empty_cache()
-        dialog_neg = []
-
+        bs = len(gen_dialogs_batch)
+        disractor_frac = int(bs * self.distract_frac)
         loss, probs = self.adversarial.forward_contrastive(
-            gen_dialogs_batch, dialogs_pos, sub_batch=self.adv_sub_batch_size
+            [*gen_dialogs_batch[:disractor_frac], *dialogs_neg[disractor_frac:],],
+            dialogs_pos,
+            sub_batch=self.adv_sub_batch_size,
         )
 
         self.metrics["pos_logits"] = probs[:, 1].mean()

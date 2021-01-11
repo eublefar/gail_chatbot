@@ -98,10 +98,20 @@ class ConvaiChatbotBase(Agent):
                     else observation["eval_labels"][0]
                 )
         self.episode_done = observation["episode_done"]
+
+        randstr = " ".join(
+            [
+                "".join(choice(letters) for i in range(randint(2, 10)))
+                for _ in range(randint(2, 7))
+            ]
+        )
         res["text"] = [
             (self.persona, self.history),  # Generate sample
             (self.persona, self.history + [self.last_label]),  # Positive sample
-            (self.persona, self.history + [neg_sample[0]]),  # Negative sample
+            (
+                self.persona,
+                self.history + [neg_sample[0] if uniform(0, 1) < 0.5 else randstr],
+            ),  # Negative sample
         ]
         res[("labels" if "labels" in observation else "eval_labels")] = [
             0,
