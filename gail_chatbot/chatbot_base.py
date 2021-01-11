@@ -8,6 +8,8 @@ from random import randint, sample, uniform, choice
 
 from gail_chatbot.phrases import UNCERTAINTY_PHRASES
 
+letters = string.ascii_letters
+
 
 class ConvaiChatbotBase(Agent):
     """Abstract class that handles parsing Convai task into dialogue batches.
@@ -60,7 +62,6 @@ class ConvaiChatbotBase(Agent):
             if uniform(0, 1) < self.distractor_frac:
                 self.history.append(neg_sample[1])
             else:
-                letters = string.ascii_letters
                 randstr = " ".join(
                     [
                         "".join(choice(letters) for i in range(randint(2, 10)))

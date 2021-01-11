@@ -26,21 +26,23 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         torch.nn.Module.__init__(self)
         self.temp = 1
         self.block_eos = False
-        self.tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
-        # self.tokenizer.add_special_tokens(
-        #     {
-        #         "pad_token": self.tokenizer.eos_token,
-        #         "sep_token": self.tokenizer.eos_token,
-        #     }
-        # )
+        self.tokenizer = BartTokenizer.from_pretrained("gpt2-medium")
+        self.tokenizer.add_special_tokens(
+            {
+                "pad_token": self.tokenizer.eos_token,
+                "sep_token": self.tokenizer.eos_token,
+            }
+        )
 
-        self.model = BartForConditionalGeneration.from_pretrained(
-            "facebook/bart-base"
-        ).eval()
+        self.model = BartForConditionalGeneration.from_pretrained("gpt2-medium").eval()
         #         self.loc_transform_layer = torch.nn.Linear(768, 768)
 
         self.value_head = torch.nn.Sequential(
-            torch.nn.Linear(1024, 256), torch.nn.ReLU(True), torch.nn.Linear(256, 1)
+            torch.nn.Linear(1024, 512),
+            torch.nn.ReLU(True),
+            torch.nn.Linear(512, 256),
+            torch.nn.ReLU(True),
+            torch.nn.Linear(256, 1),
         )
         self.cache = None
         self.use_cache = True
@@ -93,7 +95,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         with autocast() if MIXED_PREC else suppress():
             outp = self.model(
                 input_ids,
-                # token_type_ids=token_type_ids,
+                token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 output_hidden_states=True,

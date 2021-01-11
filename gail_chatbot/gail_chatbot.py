@@ -59,6 +59,8 @@ class GailChatbot(ConvaiChatbotBase):
         self.update_adversarial = True
         self.add_distractors = False
         self.distract_frac = 0.2
+        self.distract_frac_train = 0.2
+        self.distract_frac_warmup = 0.5
 
         # Counters
         self.gen_episode_num = 0
@@ -125,7 +127,8 @@ class GailChatbot(ConvaiChatbotBase):
                 "update_generator": True,
                 "update_adversarial": True,
                 "warmup_steps": 1,
-                "distract_frac": 0.2,
+                "distract_frac_train": 0.2,
+                "distract_frac_warmup": 0.5,
             },
             "generator_agent": PPO.get_default_parameters(),
         }
@@ -212,9 +215,11 @@ class GailChatbot(ConvaiChatbotBase):
         self.generator_policy.disable_cache()
         #         torch.cuda.empty_cache()
         if self.train_step > self.warmup_steps:
+            self.distract_frac = self.distract_frac_train
             self.generator.memory.batch_size = self.gpt_update_batch_size
             self.generator.update(self.gen_episode_num)
         else:
+            self.distract_frac = self.distract_frac_warmup
             self.generator.memory.empty()
         self.generator_policy.enable_cache()
 
