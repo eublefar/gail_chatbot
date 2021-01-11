@@ -4,16 +4,13 @@ import gc
 import numpy as np
 import torch
 from transformers import (
-    AutoModelWithLMHead,
-    AutoTokenizer,
-    GPT2Tokenizer,
-    GPT2LMHeadModel,
-    set_seed,
+    BartTokenizer,
+    BartForConditionalGeneration,
 )
 from gym_loop.policies.base_policy import BasePolicy
 from contextlib import suppress
 import torch.nn.functional as F
-from torch.distributions import MultivariateNormal, Categorical
+from torch.distributions import Categorical
 from torch.nn.utils.rnn import pad_sequence
 
 try:
@@ -29,15 +26,17 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         torch.nn.Module.__init__(self)
         self.temp = 1
         self.block_eos = False
-        self.tokenizer = GPT2Tokenizer.from_pretrained("microsoft/DialoGPT-medium")
-        self.tokenizer.add_special_tokens(
-            {
-                "pad_token": self.tokenizer.eos_token,
-                "sep_token": self.tokenizer.eos_token,
-            }
-        )
+        self.tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
+        # self.tokenizer.add_special_tokens(
+        #     {
+        #         "pad_token": self.tokenizer.eos_token,
+        #         "sep_token": self.tokenizer.eos_token,
+        #     }
+        # )
 
-        self.model = GPT2LMHeadModel.from_pretrained("microsoft/DialoGPT-medium").eval()
+        self.model = BartForConditionalGeneration.from_pretrained(
+            "facebook/bart-base"
+        ).eval()
         #         self.loc_transform_layer = torch.nn.Linear(768, 768)
 
         self.value_head = torch.nn.Sequential(
@@ -88,13 +87,13 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             position_ids,
         ) = self._build_inputs(state_batch)
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
-        token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
+        # token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
             outp = self.model(
                 input_ids,
-                token_type_ids=token_type_ids,
+                # token_type_ids=token_type_ids,
                 attention_mask=attention_mask,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
@@ -337,7 +336,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
                 type_list.append(history_type_ids.pin_memory())
                 mask_list.append(history_mask.pin_memory())
         input_ids = pad_sequence(
-            ids_list, batch_first=True, padding_value=self.tokenizer.eos_token_id
+            ids_list, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
         token_type_ids_batch = pad_sequence(
             type_list, batch_first=True, padding_value=0
