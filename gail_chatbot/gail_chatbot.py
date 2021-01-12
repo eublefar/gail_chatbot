@@ -448,7 +448,7 @@ class GailChatbot(ConvaiChatbotBase):
         bs = len(gen_dialogs_batch)
         disractor_frac = int(bs * self.distract_frac)
         loss, probs = self.adversarial.forward_contrastive(
-            [*gen_dialogs_batch[:disractor_frac], *dialogs_neg[disractor_frac:],],
+            [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:],],
             dialogs_pos,
             sub_batch=self.adv_sub_batch_size,
         )
