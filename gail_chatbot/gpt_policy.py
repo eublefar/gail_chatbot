@@ -4,8 +4,8 @@ import gc
 import numpy as np
 import torch
 from transformers import (
-    BartTokenizer,
-    BartForConditionalGeneration,
+    AutoTokenizer,
+    AutoModelWithLMHead,
 )
 from gym_loop.policies.base_policy import BasePolicy
 from contextlib import suppress
@@ -26,7 +26,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         torch.nn.Module.__init__(self)
         self.temp = 1
         self.block_eos = False
-        self.tokenizer = BartTokenizer.from_pretrained("gpt2-medium")
+        self.tokenizer = AutoTokenizer.from_pretrained("gpt2-medium")
         self.tokenizer.add_special_tokens(
             {
                 "pad_token": self.tokenizer.eos_token,
@@ -34,7 +34,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             }
         )
 
-        self.model = BartForConditionalGeneration.from_pretrained("gpt2-medium").eval()
+        self.model = AutoModelWithLMHead.from_pretrained("gpt2-medium").eval()
         #         self.loc_transform_layer = torch.nn.Linear(768, 768)
 
         self.value_head = torch.nn.Sequential(
@@ -89,7 +89,7 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             position_ids,
         ) = self._build_inputs(state_batch)
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
-        # token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
+        token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
         attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
 
         with autocast() if MIXED_PREC else suppress():
