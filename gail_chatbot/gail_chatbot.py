@@ -187,7 +187,8 @@ class GailChatbot(ConvaiChatbotBase):
             if self.update_adversarial:
                 self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
         except RuntimeError as e:
-            if "CUDA" in str(e):
+            if "out of memory" in str(e):
+                print(e)
                 print("CUDA error, continuing")
             else:
                 raise e
@@ -450,11 +451,18 @@ class GailChatbot(ConvaiChatbotBase):
         #         torch.cuda.empty_cache()
         bs = len(gen_dialogs_batch)
         disractor_frac = int(bs * self.distract_frac)
+        # if self.distract_frac != 0:
+        #   loss, probs = self.adversarial.forward_contrastive(
+        #       [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:],],
+        #       dialogs_pos,
+        #       sub_batch=self.adv_sub_batch_size,
+        #   )
+        # else:
         loss, probs = self.adversarial.forward_contrastive(
-            [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:],],
+            gen_dialogs_batch,
             dialogs_pos,
             sub_batch=self.adv_sub_batch_size,
-        )
+        ) 
 
         self.metrics["pos_logits"] = probs[:, 1].mean()
         self.metrics["gen_logits"] = probs[:, 0].mean() if self.update_generator else -1
