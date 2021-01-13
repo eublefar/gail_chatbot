@@ -132,7 +132,9 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             values = (
                 self.value_head(encoded, src_key_padding_mask=(attention_mask == 0))
                 .permute(1, 0, 2)
-                .gather(dim=1, index=torch.zeros_like(hidden_states[-1]))[:, 0, :]
+                .gather(
+                    dim=1, index=torch.zeros_like(hidden_states[-1], dtype=torch.int64)
+                )[:, 0, :]
             )
 
             distr = Categorical(logits=logits)
