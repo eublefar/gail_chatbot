@@ -48,7 +48,7 @@ class GailChatbot(ConvaiChatbotBase):
 
         # Hyperparameters
         self.maxlen = 50
-        self.momentum = 0.02
+        self.momentum = 0.1
         self.warmup_steps = 2
         self.adversarial_lr = 1e-5
         self.similarity_coef = 0.2
@@ -105,7 +105,6 @@ class GailChatbot(ConvaiChatbotBase):
         self._construct_generator(overwrite_params.get("generator_agent", {}), path)
         self._construct_adversarial(path)
         self.writer = SummaryWriter(os.path.join(path, filename) + ".tensorboard")
-        self.reward_norm = torch.nn.BatchNorm1d(1)
 
     def _get_default_params(self):
         return {
@@ -217,7 +216,9 @@ class GailChatbot(ConvaiChatbotBase):
         if self.train_step > self.warmup_steps:
             self.distract_frac = self.distract_frac_train
             self.generator.memory.batch_size = self.gpt_update_batch_size
+            self.generator_policy.model.train()
             self.generator.update(self.gen_episode_num)
+            self.generator_policy.model.eval()
         else:
             self.distract_frac = self.distract_frac_warmup
             self.generator.memory.empty()
@@ -419,6 +420,8 @@ class GailChatbot(ConvaiChatbotBase):
             if self.rew_std != 0
             else 0
         )
+        if self.rew_std == 0:
+            print("Reward deviation is zero!")
         #         adequacy_scores = self.reward_norm(
         #             adequacy_scores.unsqueeze(-1)
         #         ).squeeze(-1)[:probs.shape[0]]

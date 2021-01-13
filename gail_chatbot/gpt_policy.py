@@ -12,6 +12,8 @@ from contextlib import suppress
 import torch.nn.functional as F
 from torch.distributions import Categorical
 from torch.nn.utils.rnn import pad_sequence
+from torch import nn
+import math
 
 try:
     from torch.cuda.amp import autocast
@@ -19,6 +21,26 @@ try:
     MIXED_PREC = True
 except ImportError as e:
     MIXED_PREC = False
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        x = x + self.pe[: x.size(0), :]
+        return self.dropout(x)
 
 
 class GptPolicy(torch.nn.Module, BasePolicy):
@@ -37,13 +59,8 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.model = AutoModelWithLMHead.from_pretrained("gpt2-medium").eval()
         #         self.loc_transform_layer = torch.nn.Linear(768, 768)
 
-        self.value_head = torch.nn.Sequential(
-            torch.nn.Linear(1024, 512),
-            torch.nn.ReLU(True),
-            torch.nn.Linear(512, 256),
-            torch.nn.ReLU(True),
-            torch.nn.Linear(256, 1),
-        )
+        self.value_head = nn.TransformerEncoderLayer(1024, 8, 1)
+        self.pe = PositionalEncoding(1024)
         self.cache = None
         self.use_cache = True
 
@@ -107,10 +124,17 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             )
             seq_last_id = (torch.LongTensor(seqlen) - 1).view([-1, 1, 1]).cuda()
             logits = logits.gather(dim=1, index=seq_last_id.expand_as(logits))[:, 0, :]
-            features = hidden_states[-1].gather(
-                dim=1, index=seq_last_id.expand_as(hidden_states[-1])
-            )[:, 0, :]
-            values = self.value_head(features.squeeze(1))
+            # features = hidden_states[-1].gather(
+            #     dim=1, index=seq_last_id.expand_as(hidden_states[-1])
+            # )[:, 0, :]
+            # values = self.value_head(features.squeeze(1))
+            encoded = self.pe(hidden_states[-1].permute(1, 0, 2))
+            values = (
+                self.value_head(encoded, src_key_padding_mask=attention_mask)
+                .permute(1, 0, 2)
+                .gather(dim=1, index=torch.zeros_like(hidden_states[-1]))[:, 0, :]
+            )
+
             distr = Categorical(logits=logits)
 
         if self.use_cache:
