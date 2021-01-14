@@ -9,3 +9,14 @@ UNCERTAINTY_PHRASES = [
     "Huh?",
 ]
 
+NO_KNOWLEDGE_PHRASES = [
+    "I have no idea",
+    "No idea",
+    "I don't know",
+    "I don't know that",
+    "Don't know",
+    "I don't know , wierd question",
+    "I don't know, no idea",
+    "Huh?",
+]
+
