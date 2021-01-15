@@ -183,13 +183,19 @@ class GailChatbot(ConvaiChatbotBase):
                 gen_dialogs_batch = self.update_generator_(
                     dialogs_pos, dialogs_to_generate
                 )
-
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(e)
+                print("OOM in generation, continuing")
+            else:
+                raise e
+        try:
             if self.update_adversarial:
                 self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print(e)
-                print("CUDA error, continuing")
+                print("OOM in adversarial, continuing")
             else:
                 raise e
         self.gd_frac = self.gd_frac - self.gd_frac * self.gd_frac_decay
@@ -205,7 +211,7 @@ class GailChatbot(ConvaiChatbotBase):
         return [{"id": self.id} for _ in observations]
 
     def update_generator_(self, dialogs_pos, dialogs_to_generate):
-        #         torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
         with torch.no_grad():
             gen_dialogs_batch = self.generate_dialog_batch(
                 dialogs_to_generate, dialogs_pos
@@ -448,7 +454,7 @@ class GailChatbot(ConvaiChatbotBase):
             self.rew_mean = adequacy_scores_for_stats.mean()
 
     def update_adversarial_(self, dialogs_neg, dialogs_pos, gen_dialogs_batch):
-        #         torch.cuda.empty_cache()
+        torch.cuda.empty_cache()
         bs = len(gen_dialogs_batch)
         disractor_frac = int(bs * self.distract_frac)
         if self.distract_frac != 0:

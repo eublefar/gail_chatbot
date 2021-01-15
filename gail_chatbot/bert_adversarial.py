@@ -19,9 +19,9 @@ except ImportError as e:
 class BertAdversarial(torch.nn.Module):
     def __init__(self, lr=4e-6, mixed_precision=True):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-large")
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            "microsoft/deberta-large"
+            "microsoft/deberta-base"
         )
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-8)
         if MIXED_PREC:
@@ -59,74 +59,102 @@ class BertAdversarial(torch.nn.Module):
         position_ids_pos = position_ids.narrow(0, len(dialogs_gen), len(dialogs_pos))
 
         #         print("Bert ", token_ids.shape)
-        loss_return, probs_return = 0, []
-        iters = token_ids_gen.shape[0] // sub_batch + int(
-            (token_ids_gen.shape[0] % sub_batch) != 0
-        )
-
-        for i in range(iters):
-            lower = i * sub_batch
-            upper = (i + 1) * sub_batch
-            with autocast() if MIXED_PREC else suppress():
-
-                ids_gen = token_ids_gen[lower:upper].to(
-                    self.get_device(), non_blocking=True
-                )
-                mask_gen = attention_mask_gen[lower:upper].to(
-                    self.get_device(), non_blocking=True
-                )
-                types_gen = token_type_ids_gen[lower:upper].to(
-                    self.get_device(), non_blocking=True
-                )
-                positions_gen = position_ids_gen[lower:upper].to(
-                    self.get_device(), non_blocking=True
+        run = True # to start first run
+        while run:
+            run = False
+            exc = False
+            try:
+                loss_return, probs_return = 0, []
+                iters = token_ids_gen.shape[0] // sub_batch + int(
+                    (token_ids_gen.shape[0] % sub_batch) != 0
                 )
 
-                ids_pos = token_ids_pos[lower:upper].to(
-                    self.get_device(), non_blocking=True
-                )
-                mask_pos = attention_mask_pos[lower:upper].to(
-                    self.get_device(), non_blocking=True
-                )
-                types_pos = token_type_ids_pos[lower:upper].to(
-                    self.get_device(), non_blocking=True
-                )
-                positions_pos = position_ids_pos[lower:upper].to(
-                    self.get_device(), non_blocking=True
-                )
+                for i in range(iters):
+                    lower = i * sub_batch
+                    upper = (i + 1) * sub_batch
+                    with autocast() if MIXED_PREC else suppress():
 
-                outp_gen = self.model(
-                    input_ids=ids_gen,
-                    attention_mask=mask_gen,
-                    token_type_ids=types_gen,
-                    position_ids=positions_gen,
-                )
+                        ids_gen = token_ids_gen[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
+                        mask_gen = attention_mask_gen[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
+                        types_gen = token_type_ids_gen[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
+                        positions_gen = position_ids_gen[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
 
-                outp_pos = self.model(
-                    input_ids=ids_pos,
-                    attention_mask=mask_pos,
-                    token_type_ids=types_pos,
-                    position_ids=positions_pos,
-                )
-                #                 print(outp_pos)
-                #                 labels = torch.stack(
-                #                     [
-                #                         torch.zeros_like(outp_gen[0][:, 1]),
-                #                         torch.ones_like(outp_pos[0][:, 1]),
-                #                     ],
-                #                     dim=1,
-                #                 ).long()
+                        ids_pos = token_ids_pos[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
+                        mask_pos = attention_mask_pos[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
+                        types_pos = token_type_ids_pos[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
+                        positions_pos = position_ids_pos[lower:upper].to(
+                            self.get_device(), non_blocking=True
+                        )
 
-                logits = torch.stack([outp_gen[0][:, 1], outp_pos[0][:, 1]], dim=1)
-                loss = torch.nn.functional.cross_entropy(
-                    logits, torch.ones_like(outp_pos[0][:, 1]).long()
-                )
-                if backprop:
-                    (self.scaler.scale(loss / iters)).backward()
-            probs = torch.softmax(logits.float(), dim=1)
+                        outp_gen = self.model(
+                            input_ids=ids_gen,
+                            attention_mask=mask_gen,
+                            token_type_ids=types_gen,
+                            position_ids=positions_gen,
+                        )
 
-            loss_return += (loss.float() / iters).cpu().item()
-            probs_return.append(probs)
+                        outp_pos = self.model(
+                            input_ids=ids_pos,
+                            attention_mask=mask_pos,
+                            token_type_ids=types_pos,
+                            position_ids=positions_pos,
+                        )
+                        #                 print(outp_pos)
+                        #                 labels = torch.stack(
+                        #                     [
+                        #                         torch.zeros_like(outp_gen[0][:, 1]),
+                        #                         torch.ones_like(outp_pos[0][:, 1]),
+                        #                     ],
+                        #                     dim=1,
+                        #                 ).long()
+
+                        logits = torch.stack([outp_gen[0][:, 1], outp_pos[0][:, 1]], dim=1)
+                        loss = torch.nn.functional.cross_entropy(
+                            logits, torch.ones_like(outp_pos[0][:, 1]).long()
+                        )
+                        if backprop:
+                            (self.scaler.scale(loss / iters)).backward()
+                    probs = torch.softmax(logits.float(), dim=1)
+
+                    loss_return += (loss.float() / iters).cpu().item()
+                    probs_return.append(probs)
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print("OOM in adversarial, reducing batch_size") 
+                    exc = True
+                    if "loss" in locals():
+                        del loss
+                else:
+                    raise e
+                
+            if exc:
+                run = True
+                if "loss" in locals():
+                    del loss
+                torch.cuda.synchronize()
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
+                
+                torch.cuda.synchronize()
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
+                
+                sub_batch = sub_batch // 2
+
         probs = torch.cat(probs_return, dim=0)
         if (probs != probs).any():
             print("Nan in probs")

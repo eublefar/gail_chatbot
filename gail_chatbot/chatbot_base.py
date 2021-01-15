@@ -37,7 +37,7 @@ class ConvaiChatbotBase(Agent):
         self.unknown_happened = False
 
         self.questions_dataset = None
-        with open(os.path.join(path, "questions.json"), encoding="utf-8") as f:
+        with open(os.path.join(path, "questions.json")) as f:
             self.questions_dataset = json.load(f)
 
         self.noise_frac = 0.087
@@ -216,3 +216,4 @@ class ConvaiChatbotBase(Agent):
         self.resp_queue = []
         self.utt_queue = []
         self.noise_happened = False
+        self.unknown_happened = False
