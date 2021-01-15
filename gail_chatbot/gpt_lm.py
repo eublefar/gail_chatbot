@@ -19,7 +19,7 @@ except ImportError as e:
 class GPTSimple(torch.nn.Module):
     def __init__(self, lr=1e-5, mixed_precision=True):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("gpt2-medium")
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
         self.tokenizer.add_special_tokens(
             {
                 "pad_token": self.tokenizer.eos_token,
@@ -27,7 +27,9 @@ class GPTSimple(torch.nn.Module):
             }
         )
 
-        self.model = AutoModelWithLMHead.from_pretrained("gpt2-medium").train()
+        self.model = AutoModelWithLMHead.from_pretrained(
+            "microsoft/DialoGPT-medium"
+        ).train()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         self.ignore_token_id = -100
         self.lr = lr
