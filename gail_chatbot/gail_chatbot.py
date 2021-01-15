@@ -380,7 +380,11 @@ class GailChatbot(ConvaiChatbotBase):
                     final_transitions[i] = [
                         prev_dialog[i],
                         actions[i][step],
-                        (2),
+                        (
+                            ((0.5 - self.rew_mean) / self.rew_std)
+                            if self.rew_std != 0
+                            else 1
+                        ),
                         done[i],
                         deepcopy(dialogs[i]),
                     ]
@@ -458,17 +462,15 @@ class GailChatbot(ConvaiChatbotBase):
         bs = len(gen_dialogs_batch)
         disractor_frac = int(bs * self.distract_frac)
         if self.distract_frac != 0:
-          loss, probs = self.adversarial.forward_contrastive(
-              [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:],],
-              dialogs_pos,
-              sub_batch=self.adv_sub_batch_size,
-          )
+            loss, probs = self.adversarial.forward_contrastive(
+                [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:],],
+                dialogs_pos,
+                sub_batch=self.adv_sub_batch_size,
+            )
         else:
-          loss, probs = self.adversarial.forward_contrastive(
-              gen_dialogs_batch,
-              dialogs_pos,
-              sub_batch=self.adv_sub_batch_size,
-          ) 
+            loss, probs = self.adversarial.forward_contrastive(
+                gen_dialogs_batch, dialogs_pos, sub_batch=self.adv_sub_batch_size,
+            )
 
         self.metrics["pos_logits"] = probs[:, 1].mean()
         self.metrics["gen_logits"] = probs[:, 0].mean() if self.update_generator else -1
