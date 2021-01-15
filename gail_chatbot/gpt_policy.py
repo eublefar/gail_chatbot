@@ -42,24 +42,25 @@ class PositionalEncoding(nn.Module):
         x = x + self.pe[: x.size(0), :]
         return self.dropout(x)
 
+
 class ValueHead(nn.Module):
+    def __init__(self):
+        super(ValueHead, self).__init__()
+        self.pe = PositionalEncoding(1024)
+        self.value_head_1 = nn.TransformerEncoderLayer(1024, 8, 1024)
+        self.linear = nn.Linear(1024, 1)
 
-  def __init__(self):
-    super(ValueHead, self).__init__()
-    self.pe = PositionalEncoding(1024)
-    self.value_head_1 = nn.TransformerEncoderLayer(1024, 8, 1024)
-    self.linear = nn.Linear(1024, 1)
+    def forward(self, x, padding_mask):
+        x = self.pe(x).permute(1, 0, 2)
+        # print("padding_mask", padding_mask.shape)
+        # print("X", x.shape)
+        x = self.value_head_1(x, src_key_padding_mask=(padding_mask == 0))
+        x = x.masked_fill(torch.isnan(x), 0)
+        x = self.linear(F.relu(x)).permute(1, 0, 2)
+        if torch.isnan(x).any():
+            print("NaN advantage")
+        return x
 
-  def forward(self, x, padding_mask):
-    x = self.pe(x).permute(1, 0, 2)
-    # print("padding_mask", padding_mask.shape)
-    # print("X", x.shape)
-    x = self.value_head_1(x, src_key_padding_mask=(padding_mask == 0))
-    x = x.masked_fill(torch.isnan(x), 0)
-    x = self.linear(F.relu(x)).permute(1, 0, 2)
-    if torch.isnan(x).any():
-      print("NaN advantage")
-    return x
 
 class GptPolicy(torch.nn.Module, BasePolicy):
     def __init__(self, *args, **kwargs):
@@ -74,10 +75,11 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             }
         )
 
-        self.model = AutoModelWithLMHead.from_pretrained("microsoft/DialoGPT-medium").eval()
+        self.model = AutoModelWithLMHead.from_pretrained(
+            "microsoft/DialoGPT-medium"
+        ).eval()
         #         self.loc_transform_layer = torch.nn.Linear(768, 768)
 
-        
         self.value_head = ValueHead()
         self.cache = None
         self.hs_cache = None
@@ -150,19 +152,21 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             # values = self.value_head(features.squeeze(1))
 
             if self.use_cache:
-              if self.hs_cache is not None:
-                state = torch.cat([self.hs_cache, hidden_states[-1]], dim=1)
-                att = torch.cat([self.mask_cache, attention_mask], dim=1)
-              else:
+                if self.hs_cache is not None:
+                    state = torch.cat([self.hs_cache, hidden_states[-1]], dim=1)
+                    att = torch.cat([self.mask_cache, attention_mask], dim=1)
+                else:
+                    state = hidden_states[-1]
+                    att = attention_mask
+            else:
                 state = hidden_states[-1]
                 att = attention_mask
-            else:
-              state = hidden_states[-1]
-              att = attention_mask
             values = self.value_head(state, att)
             # print("before gather", values.shape)
-            values = values.gather(dim=1, index=torch.zeros_like(values, dtype=torch.int64))[:, 0, :]
-            
+            values = values.gather(
+                dim=1, index=torch.zeros_like(values, dtype=torch.int64)
+            )[:, 0, :]
+
             # print("after gather", values.shape)
 
             distr = Categorical(logits=logits)
@@ -171,7 +175,6 @@ class GptPolicy(torch.nn.Module, BasePolicy):
             self.cache = past_key_values
             self.hs_cache = state
             self.mask_cache = att
-
 
         return {
             "action_distribution": distr,
@@ -417,5 +420,5 @@ class GptPolicy(torch.nn.Module, BasePolicy):
         self.cache = None
         del self.hs_cache
         self.hs_cache = None
-        del self.mask_cache 
+        del self.mask_cache
         self.mask_cache = None
