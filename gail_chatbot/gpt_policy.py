@@ -23,37 +23,15 @@ except ImportError as e:
     MIXED_PREC = False
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
-        )
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x):
-        x = x + self.pe[: x.size(0), :]
-        return self.dropout(x)
-
-
 class ValueHead(nn.Module):
     def __init__(self):
         super(ValueHead, self).__init__()
-        self.pe = PositionalEncoding(1024)
         self.value_head_1 = nn.TransformerEncoderLayer(1024, 8, 1024)
+        self.value_head_2 = nn.TransformerEncoderLayer(1024, 8, 1024)
         self.linear = nn.Linear(1024, 1)
 
     def forward(self, x, padding_mask):
-        x = self.pe(x).permute(1, 0, 2)
-        # print("padding_mask", padding_mask.shape)
-        # print("X", x.shape)
+        x = x.permute(1, 0, 2)
         x = self.value_head_1(x, src_key_padding_mask=(padding_mask == 0))
         x = x.masked_fill(torch.isnan(x), 0)
         x = self.linear(F.relu(x)).permute(1, 0, 2)

@@ -380,7 +380,7 @@ class GailChatbot(ConvaiChatbotBase):
                     final_transitions[i] = [
                         prev_dialog[i],
                         actions[i][step],
-                        (2),
+                        (0.5 - self.rew_mean)/self.rew_std if self.rew_std !=0 else 2,
                         done[i],
                         deepcopy(dialogs[i]),
                     ]
