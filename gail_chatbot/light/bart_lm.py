@@ -20,7 +20,9 @@ except ImportError as e:
 
 
 class BARTSimple(torch.nn.Module):
-    def __init__(self, lr=1e-5, mixed_precision=True, special_tokens=None):
+    def __init__(
+        self, lr=1e-5, mixed_precision=True, special_tokens=None, emote_num=22
+    ):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
         self.tokenizer.add_special_tokens(
@@ -35,6 +37,9 @@ class BARTSimple(torch.nn.Module):
         self.model = BartForConditionalGeneration.from_pretrained(
             "facebook/bart-large"
         ).train()
+
+        self.emote_head = torch.nn.Linear(self.model.config.d_model, emote_num)
+
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         self.ignore_token_id = -100
         self.lr = lr
@@ -46,10 +51,13 @@ class BARTSimple(torch.nn.Module):
             param_group["lr"] = lr
 
     def fit_batch(
-        self, dialogs: List[Tuple[str, List[str]]], sub_batch: int = 8,
+        self,
+        dialogs: List[Tuple[str, List[str]]],
+        emote_labels: torch.LongTensor,
+        sub_batch: int = 8,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        loss, logits, labels = self(dialogs, sub_batch)
+        loss, logits, labels = self(dialogs, emote_labels, sub_batch)
 
         if MIXED_PREC:
             self.scaler.unscale_(self.optimizer)
@@ -71,7 +79,10 @@ class BARTSimple(torch.nn.Module):
         return p.device
 
     def forward(
-        self, dialogs: List[Tuple[str, List[str]]], sub_batch: int = 16,
+        self,
+        dialogs: List[Tuple[str, List[str]]],
+        emote_labels: torch.LongTensor,
+        sub_batch: int = 16,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         (
             token_ids,
@@ -102,26 +113,37 @@ class BARTSimple(torch.nn.Module):
                 labels_el = labels[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
+                emote_labels_el = emote_labels[lower:upper].to(
+                    self.get_device(), non_blocking=False
+                )
                 outp = self.model(
                     input_ids=ids,
                     attention_mask=mask,
                     decoder_input_ids=decoder_el,
                     labels=labels_el,
                     output_hidden_states=True,
+                    return_dict=True,
                 )
 
-                del ids, mask, decoder_el, positions
+                emote_outp = self.emote_head(outp["encoder_hidden_states"][:, 0, :])
+                emote_loss = torch.nn.functional.cross_entropy(
+                    emote_outp, emote_labels_el
+                )
+
+                outp["loss"] += emote_loss
+
+                del ids, mask, decoder_el, positions, emote_labels_el
             if labels is not None:
 
                 (
-                    (self.scaler.scale(outp[0] / iters)).backward()
+                    (self.scaler.scale(outp["loss"] / iters)).backward()
                     if MIXED_PREC
-                    else (outp[0] / iters).backward()
+                    else (outp["loss"] / iters).backward()
                 )
-                loss.append(outp[0].cpu().detach())
-                logits = outp[1].cpu().detach()
+                loss.append(outp["loss"].cpu().detach())
+                logits = outp["logits"].cpu().detach()
             else:
-                logits.append(outp[0].cpu().detach())
+                logits.append(outp["logits"].cpu().detach())
             del outp
 
         return (
@@ -242,11 +264,15 @@ class BARTSimple(torch.nn.Module):
 
     def save(self, path):
         self.model.save_pretrained(path)
+        torch.save(self.emote_head.state_dict(), os.path.join(path, "emote_head.bin"))
         self.tokenizer.save_pretrained(path)
 
     def load(self, path):
         self.model = self.model.from_pretrained(path).cuda().train()
         self.tokenizer = self.tokenizer.from_pretrained(path)
+        self.emote_head.load_state_dict(
+            torch.load(os.path.join(path, "emote_head.bin"))
+        )
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=self.lr, eps=1e-10
         )
