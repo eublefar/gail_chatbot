@@ -22,9 +22,9 @@ class LightChatbotBase(Agent):
     """
 
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
-        self.id = "ConvaiChatbotBase"
-        if opt["task"] != "light_dialog":
-            raise ValueError("Only works on light_dialog task")
+        self.id = "LightChatbotBase"
+        # if opt["task"] != "light_dialog":
+        #     raise ValueError("Only works on light_dialog task")
 
         self.eval_step = 0
         self.train_step = 0
@@ -36,9 +36,9 @@ class LightChatbotBase(Agent):
         self.noise_happened = False
         self.unknown_happened = False
 
-        self.questions_dataset = None
-        with open(os.path.join(path, "questions.json")) as f:
-            self.questions_dataset = json.load(f)
+        # self.questions_dataset = None
+        # with open(os.path.join(path, "questions.json")) as f:
+        #     self.questions_dataset = json.load(f)
 
         self.noise_frac = 0.087
         self.noise_distractor_frac = 0.6
@@ -54,7 +54,6 @@ class LightChatbotBase(Agent):
             "_self_name",
             "_self_persona",
             "_other_persona",
-            "_object_desc",
         ]
 
         self.ignore_line_tokens = [
@@ -62,6 +61,7 @@ class LightChatbotBase(Agent):
             "_self_act",
             "_partner_act",
             "_partner_emote",
+            "_object_desc",
         ]
         self.filter_tokens = ["_partner_say"]
 
@@ -101,7 +101,7 @@ class LightChatbotBase(Agent):
             return observation
 
         neg_obs = list(observation["label_candidates"])
-        print(observation["labels"][0])
+
         neg_obs.remove(
             observation["labels"][0]
             if "labels" in observation
@@ -118,7 +118,7 @@ class LightChatbotBase(Agent):
 
         res["text"], res["emote"] = self._extract_emote(res["text"])
 
-        res["text"] = self._filter_ignore_tokens(res["text"])
+        res["text"] = self._filter_tokens(res["text"])
 
         if self.last_label is not None:
             self.history.append(self.last_label)

@@ -49,8 +49,6 @@ class LightBartFineTune(LightChatbotBase):
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
 
-        if opt["task"] != "convai2":
-            raise ValueError("Only works on convai task")
 
         if shared:
             self._create_from_shared(shared)
