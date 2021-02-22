@@ -86,7 +86,7 @@ class LightBartFineTune(LightChatbotBase):
         }
 
     def _construct_model(self, path):
-        self.generator = BARTSimple().train()
+        self.generator = BARTSimple(special_tokens=self.ctx_tokens).train()
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["generator"])
         if os.path.isdir(adv_dir):
@@ -101,23 +101,15 @@ class LightBartFineTune(LightChatbotBase):
     def share(self) -> Dict[str, Any]:
         return dict(**super().share(), **{"generator": self.generator,})
 
-    def _extract_persona(self, text):
-        lines = text.split("\n")
-        persona = [
-            line.replace("your persona: ", "")
-            for line in lines
-            if "your persona: " in line
-        ]
-        if not persona:
-            raise ValueError("Tried to parse persona but none found")
-        self.persona = "\n".join(persona)
-        return "\n".join([line for line in lines if "your persona: " not in line])
-
     def act(self):
         raise NotImplementedError()
 
     def batch_act(self, observations: List[Message]):
-        dialogs_neg, dialogs_pos, dialogs_to_generate = super().batch_act(observations)
+        (dialogs_neg, dialogs_pos, dialogs_to_generate), emotes = super().batch_act(
+            observations
+        )
+
+        emotes = torch.LongTensor(emotes).to(self.device)
 
         run = True
         bs = self.sub_batch_size
@@ -125,7 +117,7 @@ class LightBartFineTune(LightChatbotBase):
             try:
                 run = False
                 logits, labels, loss = self.generator.fit_batch(
-                    dialogs_pos, sub_batch=bs
+                    dialogs_pos, emotes, sub_batch=bs
                 )
             except Exception as e:
                 if "CUDA" in str(e):

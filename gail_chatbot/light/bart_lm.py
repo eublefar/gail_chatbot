@@ -16,12 +16,10 @@ try:
 except ImportError as e:
     MIXED_PREC = False
 
-# TODO: Add emotes head!!!
-
 
 class BARTSimple(torch.nn.Module):
     def __init__(
-        self, lr=1e-5, mixed_precision=True, special_tokens=None, emote_num=22
+        self, lr=1e-5, mixed_precision=True, special_tokens=None, emote_num=23
     ):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
