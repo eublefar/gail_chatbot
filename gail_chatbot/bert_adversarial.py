@@ -1,10 +1,6 @@
-from typing import List, Tuple, Dict, Union
-import os
-import numpy as np
+from typing import Union
 import torch
-from torch.nn.utils import clip_grad_norm_
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
-from itertools import chain
 from contextlib import suppress
 from torch.nn.utils.rnn import pad_sequence
 
@@ -59,7 +55,7 @@ class BertAdversarial(torch.nn.Module):
         position_ids_pos = position_ids.narrow(0, len(dialogs_gen), len(dialogs_pos))
 
         #         print("Bert ", token_ids.shape)
-        run = True # to start first run
+        run = True  # to start first run
         while run:
             run = False
             exc = False
@@ -122,7 +118,9 @@ class BertAdversarial(torch.nn.Module):
                         #                     dim=1,
                         #                 ).long()
 
-                        logits = torch.stack([outp_gen[0][:, 1], outp_pos[0][:, 1]], dim=1)
+                        logits = torch.stack(
+                            [outp_gen[0][:, 1], outp_pos[0][:, 1]], dim=1
+                        )
                         loss = torch.nn.functional.cross_entropy(
                             logits, torch.ones_like(outp_pos[0][:, 1]).long()
                         )
@@ -134,13 +132,13 @@ class BertAdversarial(torch.nn.Module):
                     probs_return.append(probs)
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    print("OOM in adversarial, reducing batch_size") 
+                    print("OOM in adversarial, reducing batch_size")
                     exc = True
                     if "loss" in locals():
-                        del loss
+                        del loss  # pyright: reportUnboundVariable=false
                 else:
                     raise e
-                
+
             if exc:
                 run = True
                 if "loss" in locals():
@@ -148,11 +146,11 @@ class BertAdversarial(torch.nn.Module):
                 torch.cuda.synchronize()
                 self.optimizer.zero_grad()
                 torch.cuda.empty_cache()
-                
+
                 torch.cuda.synchronize()
                 self.optimizer.zero_grad()
                 torch.cuda.empty_cache()
-                
+
                 sub_batch = sub_batch // 2
 
         probs = torch.cat(probs_return, dim=0)

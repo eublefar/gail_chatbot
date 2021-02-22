@@ -123,7 +123,7 @@ class GPTSimple(torch.nn.Module):
         return (
             *([torch.stack(loss).mean()] if labels is not None else []),
             logits.float(),
-            labels_el.cpu(),
+            labels_el.cpu(),  # pyright: reportUnboundVariable=false
         )
 
     def _build_inputs(self, dialogs):

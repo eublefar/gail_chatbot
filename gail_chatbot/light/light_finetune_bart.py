@@ -12,15 +12,15 @@ from tensorboardX import SummaryWriter
 from parlai.core.agents import Agent
 from parlai.core.message import Message
 
-from gail_chatbot.gpt_lm import GPTSimple
-from gail_chatbot.chatbot_base import ConvaiChatbotBase
+from gail_chatbot.light.bart_lm import BARTSimple
+from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 
 
-class GPTFineTune(ConvaiChatbotBase):
+class LightBartFineTune(LightChatbotBase):
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
         super().__init__(opt, shared)
 
-        self.id = "GPTFineTune"
+        self.id = "LightBartFineTune"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.MODEL_SUBPATHS = {
             "generator": "generator",
@@ -86,7 +86,7 @@ class GPTFineTune(ConvaiChatbotBase):
         }
 
     def _construct_model(self, path):
-        self.generator = GPTSimple().train()
+        self.generator = BARTSimple().train()
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["generator"])
         if os.path.isdir(adv_dir):
@@ -136,7 +136,7 @@ class GPTFineTune(ConvaiChatbotBase):
                     raise e
 
         if self.train_step % self.episode_num_log == 0 and self.train_step:
-            self.metrics["loss"] = loss
+            self.metrics["loss"] = loss  # pyright: reportUnboundVariable=false
             labels = labels.view([-1, 1])
             logits = logits.view([-1, logits.shape[-1]])[(labels != -100)[:, 0], :]
             labels = labels[labels != -100]

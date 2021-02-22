@@ -13,16 +13,16 @@ from tensorboardX import SummaryWriter
 from copy import deepcopy
 from parlai.core.message import Message
 
-from gail_chatbot.gpt_policy import GptPolicy
+from gail_chatbot.light.bart_policy import BartPolicy
 from gail_chatbot.bert_adversarial import BertAdversarial, MIXED_PREC
-from gail_chatbot.chatbot_base import ConvaiChatbotBase
+from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 from gym_loop.agents.pytorch_ppo import PPO
 
 torch.set_num_threads(8)
 # MAKE SURE THAT N_STEPS IS SET CORRECTLY SO THAT ALL BATCH_SIZE//SUBBATCHSIZE * 2 ELEMENTS FIT IN MEMORY
 
 
-class GailChatbot(ConvaiChatbotBase):
+class LightGailChatbot(LightChatbotBase):
     """Chatbot that learns ConvAI task using GAIL
     """
 
@@ -139,7 +139,7 @@ class GailChatbot(ConvaiChatbotBase):
         # Same batch size as adversarial (negative + positive sample x batch_size)
         params.update({"batch_size": self.batch_size})
 
-        self.generator_policy = GptPolicy().eval()
+        self.generator_policy = BartPolicy().eval()
         params["policy"] = self.generator_policy
         self.generator = PPO(**params)
 
