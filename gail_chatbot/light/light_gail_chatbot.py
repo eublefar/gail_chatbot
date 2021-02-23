@@ -20,6 +20,7 @@ from gym_loop.agents.pytorch_ppo import PPO
 
 torch.set_num_threads(8)
 # MAKE SURE THAT N_STEPS IS SET CORRECTLY SO THAT ALL BATCH_SIZE//SUBBATCHSIZE * 2 ELEMENTS FIT IN MEMORY
+# TODO test per dialog updates vs per sentence
 
 
 class LightGailChatbot(LightChatbotBase):
@@ -139,7 +140,7 @@ class LightGailChatbot(LightChatbotBase):
         # Same batch size as adversarial (negative + positive sample x batch_size)
         params.update({"batch_size": self.batch_size})
 
-        self.generator_policy = BartPolicy().eval()
+        self.generator_policy = BartPolicy(special_tokens=self.ctx_tokens).eval()
         params["policy"] = self.generator_policy
         self.generator = PPO(**params)
 
@@ -175,7 +176,9 @@ class LightGailChatbot(LightChatbotBase):
         )
 
     def batch_act(self, observations: List[Message]):
-        dialogs_neg, dialogs_pos, dialogs_to_generate = super().batch_act(observations)
+        (dialogs_neg, dialogs_pos, dialogs_to_generate), _ = super().batch_act(
+            observations
+        )
         gen_dialogs_batch = []
 
         try:

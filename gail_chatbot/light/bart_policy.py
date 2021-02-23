@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from transformers import (
     AutoTokenizer,
-    AutoModelWithLMHead,
+    BartForConditionalGeneration,
 )
 from gym_loop.policies.base_policy import BasePolicy
 from contextlib import suppress
@@ -23,77 +23,60 @@ except ImportError as e:
     MIXED_PREC = False
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
-        )
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        self.register_buffer("pe", pe)
-
-    def forward(self, x):
-        x = x + self.pe[: x.size(0), :]
-        return self.dropout(x)
-
-
 class ValueHead(nn.Module):
     def __init__(self):
         super(ValueHead, self).__init__()
-        self.pe = PositionalEncoding(1024)
-        self.value_head_1 = nn.TransformerEncoderLayer(1024, 8, 1024)
-        self.linear = nn.Linear(1024, 1)
+        self.linear1 = nn.Linear(1024, 512)
+        self.linear2 = nn.Linear(512, 1)
 
-    def forward(self, x, padding_mask):
-        x = self.pe(x).permute(1, 0, 2)
-        # print("padding_mask", padding_mask.shape)
-        # print("X", x.shape)
-        x = self.value_head_1(x, src_key_padding_mask=(padding_mask == 0))
-        x = x.masked_fill(torch.isnan(x), 0)
-        x = self.linear(F.relu(x)).permute(1, 0, 2)
+    def forward(
+        self, x,
+    ):
+        x = self.linear1(x)
+        x = self.linear2(F.gelu(x))
         if torch.isnan(x).any():
             print("NaN advantage")
         return x
 
 
 class BartPolicy(torch.nn.Module, BasePolicy):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, special_tokens=None, emote_num=23, *args, **kwargs):
         torch.nn.Module.__init__(self)
         self.temp = 1
         self.block_eos = False
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-        self.tokenizer.add_special_tokens(
-            {
-                "pad_token": self.tokenizer.eos_token,
-                "sep_token": self.tokenizer.eos_token,
-            }
-        )
 
-        self.model = AutoModelWithLMHead.from_pretrained(
-            "microsoft/DialoGPT-medium"
-        ).eval()
-        #         self.loc_transform_layer = torch.nn.Linear(768, 768)
+        if special_tokens is not None:
+            self.tokenizer.add_tokens(special_tokens)
+
+        self.model = BartForConditionalGeneration.from_pretrained(
+            "facebook/bart-large"
+        ).train()
+
+        self.model.resize_token_embeddings(len(self.tokenizer))
+
+        self.emote_head = torch.nn.Linear(self.model.config.d_model, emote_num)
 
         self.value_head = ValueHead()
         self.cache = None
-        self.hs_cache = None
-        self.mask_cache = None
         self.use_cache = True
 
     def save(self, path: str):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
+        self.tokenizer.save_pretrained(os.path.join(path, "model.bin"))
+        torch.save(self.emote_head.state_dict(), os.path.join(path, "emote_head.bin"))
         torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
 
     def load(self, path: str):
         self.model = self.model.from_pretrained(os.path.join(path, "model.bin")).eval()
+        self.tokenizer = self.tokenizer.from_pretrained(
+            os.path.join(path, "model.bin")
+        ).eval()
         self.value_head.load_state_dict(
             torch.load(os.path.join(path, "value_head.bin"))
+        )
+        self.emote_head.load_state_dict(
+            torch.load(os.path.join(path, "emote_head.bin"))
         )
 
     def get_device(self):
@@ -105,10 +88,11 @@ class BartPolicy(torch.nn.Module, BasePolicy):
 
     def forward(self, state_batch: List[Tuple[str, List[str], List[str]]]):
         if self.use_cache:
-            past_key_values = self.cache
+            encoder_outputs, past_key_values = self.cache
             self.cache = None
         else:
             past_key_values = None
+            encoder_outputs = None
         if past_key_values is not None:
             try:
                 state_batch = [
@@ -120,61 +104,41 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 print(state_batch)
                 raise e
 
-        (
-            input_ids,
-            token_type_ids_batch,
-            seqlen,
-            attention_mask,
-            position_ids,
-        ) = self._build_inputs(state_batch)
+        (input_ids, seqlen, decoder_input_ids,) = self._build_inputs(state_batch)
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
-        token_type_ids = token_type_ids_batch.to(self.get_device(), non_blocking=True)
-        attention_mask = attention_mask.to(self.get_device(), non_blocking=True)
-
+        decoder_input_ids = decoder_input_ids.to(self.get_device(), non_blocking=True)
         with autocast() if MIXED_PREC else suppress():
             outp = self.model(
                 input_ids,
-                token_type_ids=token_type_ids,
-                attention_mask=attention_mask,
+                decoder_input_ids=decoder_input_ids,
+                encoder_outputs=encoder_outputs,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
+                return_dict=True,
             )
             logits, past_key_values, hidden_states = (
                 outp["logits"],
                 outp["past_key_values"],
-                outp["hidden_states"],
+                outp["decoder_hidden_states"],
             )
             seq_last_id = (torch.LongTensor(seqlen) - 1).view([-1, 1, 1]).cuda()
             logits = logits.gather(dim=1, index=seq_last_id.expand_as(logits))[:, 0, :]
-            # features = hidden_states[-1].gather(
-            #     dim=1, index=seq_last_id.expand_as(hidden_states[-1])
-            # )[:, 0, :]
-            # values = self.value_head(features.squeeze(1))
-
-            if self.use_cache:
-                if self.hs_cache is not None:
-                    state = torch.cat([self.hs_cache, hidden_states[-1]], dim=1)
-                    att = torch.cat([self.mask_cache, attention_mask], dim=1)
-                else:
-                    state = hidden_states[-1]
-                    att = attention_mask
-            else:
-                state = hidden_states[-1]
-                att = attention_mask
-            values = self.value_head(state, att)
-            # print("before gather", values.shape)
-            values = values.gather(
-                dim=1, index=torch.zeros_like(values, dtype=torch.int64)
+            features = hidden_states[-1].gather(
+                dim=1, index=seq_last_id.expand_as(hidden_states[-1])
             )[:, 0, :]
-
-            # print("after gather", values.shape)
-
+            values = self.value_head(features.squeeze(1))
+            print("values.shape", values.shape)
             distr = Categorical(logits=logits)
 
         if self.use_cache:
-            self.cache = past_key_values
-            self.hs_cache = state
-            self.mask_cache = att
+            self.cache = (
+                (
+                    outp["encoder_last_hidden_state"],
+                    outp["encoder_hidden_states"],
+                    outp["encoder_attentions"],
+                ),
+                past_key_values,
+            )
 
         return {
             "action_distribution": distr,
@@ -209,14 +173,8 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         )
         tensor_tuple = self._append_utterance_batch(tensor_tuple, utterance_batch_list)
 
-        (
-            input_ids,
-            attention_mask,
-            token_type_ids_batch,
-            lengths,
-            position_ids,
-        ) = tensor_tuple
-        return input_ids, token_type_ids_batch, lengths, attention_mask, position_ids
+        (input_ids, lengths, decoder_ids) = tensor_tuple
+        return input_ids, lengths, decoder_ids
 
     def _prepare_persona_batch(self, persona_batch):
         if all(persona_batch):
@@ -350,66 +308,32 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         return history_token_ids, history_mask, history_type_ids
 
     def _append_utterance_batch(self, tensor_tuple, utterance_batch_list):
-        utterance_attention_list = [
-            torch.ones_like(utt) for utt in utterance_batch_list
-        ]
         lengths = []
         ids_list = []
-        mask_list = []
-        type_list = []
+        decoder_ids_list = []
         for i, tensor_tuple_row in enumerate(zip(*tensor_tuple)):
             history_token_ids, history_mask, history_type_ids = tensor_tuple_row
 
             if utterance_batch_list[i].nelement() != 0:
-                lengths.append(
-                    history_type_ids.shape[0] + utterance_batch_list[i].shape[0]
-                )
-
-                ids_list.append(
-                    torch.cat(
-                        [
-                            history_token_ids,  # .to(self.get_device(), non_blocking=True),
-                            utterance_batch_list[i],
-                        ],
-                        dim=0,
-                    ).pin_memory()
-                )
-                type_list.append(
-                    torch.cat(
-                        [
-                            history_type_ids,  # .to(self.get_device(), non_blocking=True),
-                            torch.zeros_like(utterance_batch_list[i]),
-                        ],
-                        dim=0,
-                    ).pin_memory()
-                )
-                mask_list.append(
-                    torch.cat(
-                        [
-                            history_mask,  # .to(self.get_device(), non_blocking=True),
-                            utterance_attention_list[i],
-                        ],
-                        dim=0,
-                    ).pin_memory()
-                )
-            else:
-                lengths.append(history_type_ids.shape[0])
+                lengths.append(utterance_batch_list[i].shape[0])
                 ids_list.append(history_token_ids.pin_memory())
-                type_list.append(history_type_ids.pin_memory())
-                mask_list.append(history_mask.pin_memory())
+                decoder_ids_list.append(utterance_batch_list[i].pin_memory())
+            else:
+                lengths.append(1)
+                decoder_ids_list.append(torch.LongTensor([self.tokenizer.eos_token_id]))
+                ids_list.append(history_token_ids.pin_memory())
         input_ids = pad_sequence(
             ids_list, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
-        token_type_ids_batch = pad_sequence(
-            type_list, batch_first=True, padding_value=0
+        decoder_ids = pad_sequence(
+            decoder_ids_list,
+            batch_first=True,
+            padding_value=self.tokenizer.pad_token_id,
         )
-        attention_mask = pad_sequence(mask_list, batch_first=True, padding_value=0)
         return (
             input_ids,
-            attention_mask,
-            token_type_ids_batch,
             lengths,
-            None,  #             attention_mask.cumsum(dim=1) - 1,
+            decoder_ids,
         )
 
     def reset_noise(self):
@@ -418,7 +342,3 @@ class BartPolicy(torch.nn.Module, BasePolicy):
     def clear_cache(self):
         del self.cache
         self.cache = None
-        del self.hs_cache
-        self.hs_cache = None
-        del self.mask_cache
-        self.mask_cache = None
