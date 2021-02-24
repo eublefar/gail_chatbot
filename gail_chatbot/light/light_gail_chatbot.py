@@ -14,7 +14,10 @@ from copy import deepcopy
 from parlai.core.message import Message
 
 from gail_chatbot.light.bart_policy import BartPolicy
-from gail_chatbot.bert_adversarial import BertAdversarial, MIXED_PREC
+from gail_chatbot.bert_adversarial_contrastive import (
+    BertAdversarialContrastive,
+    MIXED_PREC,
+)
 from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 from gym_loop.agents.pytorch_ppo import PPO
 
@@ -156,7 +159,7 @@ class LightGailChatbot(LightChatbotBase):
             self.generator_policy.to(self.device)
 
     def _construct_adversarial(self, path):
-        self.adversarial = BertAdversarial()
+        self.adversarial = BertAdversarialContrastive()
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial"])
         if os.path.isfile(adv_dir):
@@ -190,6 +193,7 @@ class LightGailChatbot(LightChatbotBase):
             if "out of memory" in str(e):
                 print(e)
                 print("OOM in generation, continuing")
+                self.generator.optimizer.zero_grad()
             else:
                 raise e
         try:
@@ -199,6 +203,7 @@ class LightGailChatbot(LightChatbotBase):
             if "out of memory" in str(e):
                 print(e)
                 print("OOM in adversarial, continuing")
+                self.adversarial.optimizer.zero_grad()
             else:
                 raise e
         self.gd_frac = self.gd_frac - self.gd_frac * self.gd_frac_decay

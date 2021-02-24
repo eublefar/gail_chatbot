@@ -8,7 +8,7 @@ from parlai.core.agents import Agent
 from parlai.core.message import Message
 from random import randint, sample, uniform, choice
 
-from gail_chatbot.phrases import UNCERTAINTY_PHRASES
+from gail_chatbot.phrases import UNCERTAINTY_PHRASES, NO_KNOWLEDGE_PHRASES
 
 letters = string.ascii_letters
 
@@ -29,6 +29,10 @@ class LightChatbotBase(Agent):
         self.eval_step = 0
         self.train_step = 0
 
+        self.questions_dataset = None
+        with open(os.path.join(path, "questions.json")) as f:
+            self.questions_dataset = json.load(f)
+
         self.persona = None
         self.history = []
         self.last_label = None
@@ -40,9 +44,9 @@ class LightChatbotBase(Agent):
         # with open(os.path.join(path, "questions.json")) as f:
         #     self.questions_dataset = json.load(f)
 
-        self.noise_frac = 0.087
+        self.noise_frac = 0.066
         self.noise_distractor_frac = 0.6
-        self.unknown_frac = 0.087
+        self.unknown_frac = 0.066
 
         self.utt_queue = []
         self.resp_queue = []
@@ -126,6 +130,9 @@ class LightChatbotBase(Agent):
         if uniform(0, 1) < self.noise_frac and not self.noise_happened:
             self.noise_happened = True
             self._add_out_of_context_exchange(res, neg_sample)
+        elif uniform(0, 1) < self.unknown_frac and not self.unknown_happened:
+            self.unknown_happened = True
+            self._add_unknown_question(res)
         else:
             self._add_utterance(res)
 
@@ -152,6 +159,16 @@ class LightChatbotBase(Agent):
             self.last_label = (
                 res["labels"][0] if "labels" in res else res["eval_labels"][0]
             )
+
+    def _add_unknown_question(self, res):
+        self.history.append(choice(self.questions_dataset))
+
+        self.last_label = choice(NO_KNOWLEDGE_PHRASES)
+
+        self.utt_queue.append(res["text"])
+        self.resp_queue.append(
+            res["labels"][0] if "labels" in res else res["eval_labels"][0]
+        )
 
     def _add_out_of_context_exchange(self, res, neg_sample):
         if uniform(0, 1) < self.noise_distractor_frac:
