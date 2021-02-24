@@ -49,7 +49,6 @@ class LightBartFineTune(LightChatbotBase):
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
 
-
         if shared:
             self._create_from_shared(shared)
         else:
@@ -106,7 +105,6 @@ class LightBartFineTune(LightChatbotBase):
         (dialogs_neg, dialogs_pos, dialogs_to_generate), emotes = super().batch_act(
             observations
         )
-
         emotes = torch.LongTensor(emotes).to(self.device)
 
         run = True
@@ -122,6 +120,7 @@ class LightBartFineTune(LightChatbotBase):
                     print("CUDA error, reducing batch_size")
                     bs //= 2
                     run = True
+                    self.generator.optimizer.zero_grad()
                 else:
                     raise e
 

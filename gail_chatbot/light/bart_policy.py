@@ -266,7 +266,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
 
             history_size = history_row_mask.sum()
 
-            while (history_size + persona_sizes[i]) > 400:
+            while (history_size + persona_sizes[i]) > 512:
                 num_sum += 1
                 num -= 1
                 history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view(

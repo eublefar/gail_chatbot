@@ -35,7 +35,7 @@ class BARTSimple(torch.nn.Module):
         self.model = BartForConditionalGeneration.from_pretrained(
             "facebook/bart-large"
         ).train()
-        
+
         self.model.resize_token_embeddings(len(self.tokenizer))
 
         self.emote_head = torch.nn.Linear(self.model.config.d_model, emote_num)
@@ -152,13 +152,13 @@ class BARTSimple(torch.nn.Module):
         )
 
     def _build_inputs(self, dialogs):
-        persona_batch = [dialog[0] + self.tokenizer.sep_token for dialog in dialogs]
+        persona_batch = [dialog[0] for dialog in dialogs]
         persona_batch_outp = self.tokenizer(
             persona_batch,
             return_tensors="pt",
             padding=True,
             pad_to_multiple_of=1,
-            add_special_tokens=False,
+            add_special_tokens=True,
             return_attention_mask=True,
         )
         persona_batch_ids = persona_batch_outp["input_ids"].pin_memory()
@@ -183,8 +183,12 @@ class BARTSimple(torch.nn.Module):
             return_attention_mask=True,
         )
 
-        history_batch_ids = history_batch_outp["input_ids"].pin_memory()
-        history_batch_mask = history_batch_outp["attention_mask"].bool().pin_memory()
+        history_batch_ids = (
+            history_batch_outp["input_ids"].pin_memory()[:, 1:].contiguous()
+        )
+        history_batch_mask = (
+            history_batch_outp["attention_mask"].bool().pin_memory()[:, 1:].contiguous()
+        )
 
         history_batch_ids_list = []
         history_batch_mask_list = []
@@ -200,11 +204,13 @@ class BARTSimple(torch.nn.Module):
             )
             history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
 
-            label_mask = history_batch_mask[num_sum + num - 1, 1:]
-            labels = history_batch_ids[num_sum + num - 1, 1:][label_mask]
+            label_mask = history_batch_mask[num_sum + num - 1, :]
+            labels = history_batch_ids[num_sum + num - 1, :][label_mask]
 
             decoder_ids = shift_tokens_right(
-                labels.view([1,-1]), self.tokenizer.pad_token_id, self.tokenizer.eos_token_id
+                labels.view([1, -1]),
+                self.tokenizer.pad_token_id,
+                self.tokenizer.eos_token_id,
             ).view([-1])
 
             history_size = history_row_mask.sum()
@@ -218,11 +224,13 @@ class BARTSimple(torch.nn.Module):
                 ].view([-1])
                 history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
 
-                label_mask = history_batch_mask[num_sum + num - 1, 1:]
-                labels = history_batch_ids[num_sum + num - 1, 1:][label_mask]
+                label_mask = history_batch_mask[num_sum + num - 1, :]
+                labels = history_batch_ids[num_sum + num - 1, :][label_mask]
 
                 decoder_ids = shift_tokens_right(
-                    labels.view([1,-1]), self.tokenizer.pad_token_id, self.tokenizer.eos_token_id
+                    labels.view([1, -1]),
+                    self.tokenizer.pad_token_id,
+                    self.tokenizer.eos_token_id,
                 ).view([-1])
 
                 history_size = history_row_mask.sum()
