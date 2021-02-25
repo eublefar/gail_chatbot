@@ -18,6 +18,7 @@ from gail_chatbot.bert_adversarial_contrastive import (
     BertAdversarialContrastive,
     MIXED_PREC,
 )
+from gail_chatbot.bert_adversarial import BertAdversarial
 from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 from gym_loop.agents.pytorch_ppo import PPO
 
@@ -37,12 +38,14 @@ class LightGailChatbot(LightChatbotBase):
         self.MODEL_SUBPATHS = {
             "generator": "generator",
             "adversarial": "adversarial.bin",
+            "adversarial_static": "adversarial_static",
         }
         self.opt = opt
 
         # Neural nets
         self.generator = None
         self.adversarial = None
+        self.adversarial_static = None
 
         # Batch sizes
         self.batch_size = opt["batchsize"]  # batch size of gradient update
@@ -92,6 +95,7 @@ class LightGailChatbot(LightChatbotBase):
     def _create_from_shared(self, shared: Dict[str, Any]):
         self.generator = shared["generator"]
         self.adversarial = shared["adversarial"]
+        self.adversarial = shared["adversarial_static"]
         self.generator_policy = self.generator.policy
 
     def _create_from_path(self, path: str):
@@ -108,6 +112,7 @@ class LightGailChatbot(LightChatbotBase):
         self.__dict__.update(overwrite_params.get("gail", {}))
         self._construct_generator(overwrite_params.get("generator_agent", {}), path)
         self._construct_adversarial(path)
+        self._construct_adversarial_static(path)
         self.writer = SummaryWriter(os.path.join(path, filename) + ".tensorboard")
 
     def _get_default_params(self):
@@ -159,7 +164,7 @@ class LightGailChatbot(LightChatbotBase):
             self.generator_policy.to(self.device)
 
     def _construct_adversarial(self, path):
-        self.adversarial = BertAdversarialContrastive()
+        self.adversarial = BertAdversarialContrastive().train()
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial"])
         if os.path.isfile(adv_dir):
@@ -172,10 +177,28 @@ class LightGailChatbot(LightChatbotBase):
             self.adversarial.to(self.device)
         self.adversarial.set_lr(self.adversarial_lr)
 
+    def _construct_adversarial_static(self, path):
+        self.adversarial_static = BertAdversarial().eval()
+
+        adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial_static"])
+        if os.path.isfile(adv_dir):
+            self.adversarial_static.load(adv_dir)
+        else:
+            self.adversarial_static.save(adv_dir)
+
+        if torch.cuda.device_count() > 1:
+            self.adversarial_static.cuda(1)
+        else:
+            self.adversarial_static.to(self.device)
+
     def share(self) -> Dict[str, Any]:
         return dict(
             **super().share(),
-            **{"generator": self.generator, "adversarial": self.adversarial}
+            **{
+                "generator": self.generator,
+                "adversarial": self.adversarial,
+                "adversarial_static": self.adversarial_static,
+            }
         )
 
     def batch_act(self, observations: List[Message]):
@@ -425,9 +448,15 @@ class LightGailChatbot(LightChatbotBase):
         )
         probs = probs.cpu().float().detach()
 
-        self.metrics["gen_logits_predict"] = probs[:, 0].mean()
+        loss, probs_static = self.adversarial_static(
+            dialogs_gen, [], sub_batch=self.gen_sub_batch_size, backprop=False
+        )
+
+        self.metrics["gen_adv_rew"] = probs[:, 0].mean()
+        self.metrics["gen_static_rew"] = probs_static[:, 1].mean()
 
         adequacy_scores = probs[:, 0]
+        static_adequacy_score = probs_static[:, 1]
 
         self.update_stats(adequacy_scores)
         adequacy_scores = (
@@ -441,7 +470,7 @@ class LightGailChatbot(LightChatbotBase):
         #             adequacy_scores.unsqueeze(-1)
         #         ).squeeze(-1)[:probs.shape[0]]
 
-        reward_scores = adequacy_scores.cpu().detach().numpy()
+        reward_scores = adequacy_scores.cpu().detach().numpy() + static_adequacy_score.cpu().detach().numpy()
 
         return reward_scores
 

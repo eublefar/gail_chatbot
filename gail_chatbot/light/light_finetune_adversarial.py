@@ -8,12 +8,11 @@ import yaml
 from random import sample
 import numpy as np
 from sklearn.metrics import average_precision_score, roc_auc_score
-from torch.distributions import Categorical
 from tensorboardX import SummaryWriter
-from parlai.core.agents import Agent
 from parlai.core.message import Message
 
-from gail_chatbot.bert_adversarial import BertAdversarial
+from torch.nn.utils import clip_grad_norm_
+from gail_chatbot.bert_adversarial import BertAdversarial, MIXED_PREC
 from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 
 
@@ -113,6 +112,14 @@ class LightAdversarialFineTune(LightChatbotBase):
             try:
                 run = False
                 loss, probs = self.adversarial(dialogs_neg, dialogs_pos, sub_batch=bs)
+                if MIXED_PREC:
+                    self.adversarial.scaler.unscale_(self.adversarial.optimizer)
+                    clip_grad_norm_(self.adversarial.model.parameters(), 20)
+                    self.adversarial.scaler.step(self.adversarial.optimizer)
+                    self.adversarial.scaler.update()
+                else:
+                    clip_grad_norm_(self.model.parameters(), 20)
+                    self.optimizer.step()
             except Exception as e:
                 if "CUDA" in str(e):
                     print("CUDA error, reducing batch_size")
@@ -132,7 +139,9 @@ class LightAdversarialFineTune(LightChatbotBase):
             self.metrics["ap"] = average_precision_score(
                 logits, probs[:, 1], average="macro",
             )
-            self.metrics["roc_auc"] = roc_auc_score(logits, probs[:, 1], average="macro",)
+            self.metrics["roc_auc"] = roc_auc_score(
+                logits, probs[:, 1], average="macro",
+            )
             self.write_metrics()
 
         if (

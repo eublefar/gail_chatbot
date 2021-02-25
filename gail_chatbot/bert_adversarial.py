@@ -4,6 +4,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from contextlib import suppress
 from torch.nn.utils.rnn import pad_sequence
 import os
+
 try:
     from torch.cuda.amp import autocast, GradScaler
 
@@ -78,8 +79,8 @@ class BertAdversarial(torch.nn.Module):
                         outp_gen = self.model(
                             input_ids=ids_gen,
                             attention_mask=mask_gen,
-                            # token_type_ids=types_gen,
-                            # position_ids=positions_gen,
+                            token_type_ids=types_gen,
+                            position_ids=positions_gen,
                             return_dict=True,
                         )
                         logits = outp_gen["logits"]
@@ -228,7 +229,7 @@ class BertAdversarial(torch.nn.Module):
         )
 
     def save(self, dir):
-        path= os.path.join(dir, "adversarial.bin")
+        path = os.path.join(dir, "adversarial.bin")
         if not os.path.isdir(dir):
             os.mkdir(dir)
         torch.save(self.state_dict(), path)
