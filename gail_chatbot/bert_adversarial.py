@@ -4,6 +4,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from contextlib import suppress
 from torch.nn.utils.rnn import pad_sequence
 import os
+
 try:
     from torch.cuda.amp import autocast, GradScaler
 
@@ -81,11 +82,12 @@ class BertAdversarial(torch.nn.Module):
                             token_type_ids=types_gen,
                             position_ids=positions_gen,
                             return_dict=True,
-                            labels=labels_gen,
                         )
 
-                        loss = outp_gen["loss"]
                         logits = outp_gen["logits"]
+                        loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                            labels_gen, logits
+                        )
                         if backprop:
                             (self.scaler.scale(loss / iters)).backward()
                     probs = torch.softmax(logits.float(), dim=1)
@@ -229,7 +231,7 @@ class BertAdversarial(torch.nn.Module):
         )
 
     def save(self, dir):
-        path= os.path.join(dir, "adversarial.bin")
+        path = os.path.join(dir, "adversarial.bin")
         if not os.path.isdir(dir):
             os.mkdir(dir)
         torch.save(self.state_dict(), path)
