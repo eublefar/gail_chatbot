@@ -44,9 +44,9 @@ class LightChatbotBase(Agent):
         # with open(os.path.join(path, "questions.json")) as f:
         #     self.questions_dataset = json.load(f)
 
-        self.noise_frac = 0.066
+        self.noise_frac = 0.001
         self.noise_distractor_frac = 0.6
-        self.unknown_frac = 0.066
+        self.unknown_frac = 0.001
 
         self.utt_queue = []
         self.resp_queue = []

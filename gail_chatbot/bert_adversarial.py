@@ -3,7 +3,7 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from contextlib import suppress
 from torch.nn.utils.rnn import pad_sequence
-
+import os
 try:
     from torch.cuda.amp import autocast, GradScaler
 
@@ -13,12 +13,12 @@ except ImportError as e:
 
 
 class BertAdversarial(torch.nn.Module):
-    def __init__(self, lr=4e-6, mixed_precision=True):
+    def __init__(self, lr=1e-5, mixed_precision=True):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
         self.model = AutoModelForSequenceClassification.from_pretrained(
             "microsoft/deberta-base"
-        )
+        ).train()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-8)
         if MIXED_PREC:
             self.scaler = GradScaler()
@@ -38,14 +38,13 @@ class BertAdversarial(torch.nn.Module):
             print("dialogs_gen", dialogs_gen)
             raise RuntimeError("Paired dialog contexts are different")
 
-        labels = torch.stack(
+        labels = torch.cat(
             [
                 torch.zeros_like(token_ids[: len(dialogs_gen), 0]),
                 torch.ones_like(token_ids[len(dialogs_gen) :, 0]),
             ],
             dim=0,
         ).long()
-
         run = True  # to start first run
         while run:
             run = False
@@ -228,3 +227,13 @@ class BertAdversarial(torch.nn.Module):
             history_mask,
             history_mask.cumsum(dim=1) - 1,
         )
+
+    def save(self, dir):
+        path= os.path.join(dir, "adversarial.bin")
+        if not os.path.isdir(dir):
+            os.mkdir(dir)
+        torch.save(self.state_dict(), path)
+
+    def load(self, dir):
+        self.load_state_dict(torch.load(os.path.join(dir, "adversarial.bin")))
+

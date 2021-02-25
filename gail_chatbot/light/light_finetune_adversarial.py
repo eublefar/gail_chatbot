@@ -17,7 +17,7 @@ from gail_chatbot.bert_adversarial import BertAdversarial
 from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 
 
-class LightBartFineTune(LightChatbotBase):
+class LightAdversarialFineTune(LightChatbotBase):
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
         super().__init__(opt, shared)
 
@@ -32,7 +32,6 @@ class LightBartFineTune(LightChatbotBase):
         self.opt = opt
         self.last_label = None
         self.last_input = None
-        self.generator = None
         self.batch_size = opt["batchsize"]
         self.sub_batch_size = 8
         self.metrics = {}
@@ -88,13 +87,13 @@ class LightBartFineTune(LightChatbotBase):
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial"])
         if os.path.isdir(adv_dir):
-            self.generator.load(adv_dir)
+            self.adversarial.load(adv_dir)
         else:
-            self.generator.save(adv_dir)
+            self.adversarial.save(adv_dir)
         if torch.cuda.device_count() > 1:
-            self.generator.cuda(1)
+            self.adversarial.cuda(1)
         else:
-            self.generator.to(self.device)
+            self.adversarial.to(self.device)
 
     def share(self) -> Dict[str, Any]:
         return dict(**super().share(), **{"adversarial": self.adversarial,})
@@ -124,15 +123,17 @@ class LightBartFineTune(LightChatbotBase):
                     raise e
 
         if self.train_step % self.episode_num_log == 0 and self.train_step:
+            probs = probs.cpu().detach()
             self.metrics["loss"] = loss  # pyright: reportUnboundVariable=false
 
             logits = np.concatenate(
                 [np.zeros([len(dialogs_neg)]), np.ones([len(dialogs_pos)])], axis=0
             )
+
             self.metrics["ap"] = average_precision_score(
-                probs, logits, average="macro",
+                logits, probs[:, 1], average="macro",
             )
-            self.metrics["roc_auc"] = roc_auc_score(probs, logits, average="macro",)
+            self.metrics["roc_auc"] = roc_auc_score(logits, probs[:, 1], average="macro",)
             self.write_metrics()
 
         if (
