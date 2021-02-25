@@ -87,7 +87,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         return torch.nn.Module.__call__(self, *args, **kwargs)
 
     def forward(self, state_batch: List[Tuple[str, List[str], List[str]]]):
-        if self.use_cache:
+        if self.use_cache and self.cache:
             encoder_outputs, past_key_values = self.cache
             self.cache = None
         else:
