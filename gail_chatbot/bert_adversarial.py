@@ -4,7 +4,6 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from contextlib import suppress
 from torch.nn.utils.rnn import pad_sequence
 import os
-
 try:
     from torch.cuda.amp import autocast, GradScaler
 
@@ -16,9 +15,9 @@ except ImportError as e:
 class BertAdversarial(torch.nn.Module):
     def __init__(self, lr=1e-5, mixed_precision=True):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-large")
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            "microsoft/deberta-base"
+            "microsoft/deberta-large"
         ).train()
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-8)
         if MIXED_PREC:
@@ -79,15 +78,13 @@ class BertAdversarial(torch.nn.Module):
                         outp_gen = self.model(
                             input_ids=ids_gen,
                             attention_mask=mask_gen,
-                            token_type_ids=types_gen,
-                            position_ids=positions_gen,
+                            # token_type_ids=types_gen,
+                            # position_ids=positions_gen,
                             return_dict=True,
                         )
-
                         logits = outp_gen["logits"]
-                        loss = torch.nn.functional.binary_cross_entropy_with_logits(
-                            labels_gen, logits
-                        )
+
+                        loss = torch.nn.functional.cross_entropy(logits, labels_gen)
                         if backprop:
                             (self.scaler.scale(loss / iters)).backward()
                     probs = torch.softmax(logits.float(), dim=1)
@@ -177,7 +174,7 @@ class BertAdversarial(torch.nn.Module):
 
             history_size = history_row_mask.sum()
 
-            while (history_size + persona_sizes[i]) > 400:
+            while (history_size + persona_sizes[i]) > 512:
                 num_sum += 1
                 num -= 1
                 history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
@@ -231,7 +228,7 @@ class BertAdversarial(torch.nn.Module):
         )
 
     def save(self, dir):
-        path = os.path.join(dir, "adversarial.bin")
+        path= os.path.join(dir, "adversarial.bin")
         if not os.path.isdir(dir):
             os.mkdir(dir)
         torch.save(self.state_dict(), path)

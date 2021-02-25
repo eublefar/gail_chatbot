@@ -118,7 +118,7 @@ class LightChatbotBase(Agent):
         if not self.persona:
             res["text"] = self._extract_persona(observation["text"])
             if self.filter_tokens[0] not in observation["text"]:
-                res["text"] += "\n" + self.filter_tokens[0] + " __SILENCE__"
+                res["text"] += "\n" + self.filter_tokens[0] + ""
 
         res["text"], res["emote"] = self._extract_emote(res["text"])
 
@@ -201,7 +201,7 @@ class LightChatbotBase(Agent):
             (self.persona, self.history + [self.last_label]),  # Positive sample
             (
                 self.persona,
-                self.history + [neg_sample[0] if uniform(0, 1) < 0.5 else randstr],
+                self.history + [neg_sample[0] if uniform(0, 1) < 0.1 else randstr],
             ),  # Negative sample
         ]
         res[("labels" if "labels" in res else "eval_labels")] = [

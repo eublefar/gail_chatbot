@@ -55,7 +55,7 @@ class LightAdversarialFineTune(LightChatbotBase):
             self._create_from_path(opt["model_file"])
 
     def _create_from_shared(self, shared: Dict[str, Any]):
-        self.generator = shared["adversarial"]
+        self.adversarial = shared["adversarial"]
 
     def _create_from_path(self, path: str):
         path, filename = os.path.split(path)
@@ -129,7 +129,6 @@ class LightAdversarialFineTune(LightChatbotBase):
             logits = np.concatenate(
                 [np.zeros([len(dialogs_neg)]), np.ones([len(dialogs_pos)])], axis=0
             )
-
             self.metrics["ap"] = average_precision_score(
                 logits, probs[:, 1], average="macro",
             )
