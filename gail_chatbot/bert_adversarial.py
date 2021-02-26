@@ -34,7 +34,7 @@ class BertAdversarial(torch.nn.Module):
         )
         dialogs_gen = [(dialog[0], dialog[1][:-1]) for dialog in dialogs_gen]
         dialogs_pos = [(dialog[0], dialog[1][:-1]) for dialog in dialogs_pos]
-        if dialogs_pos != dialogs_gen:
+        if dialogs_pos != dialogs_gen and backprop:
             print("dialogs_pos", dialogs_pos)
             print("dialogs_gen", dialogs_gen)
             raise RuntimeError("Paired dialog contexts are different")

@@ -44,7 +44,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         torch.nn.Module.__init__(self)
         self.temp = 1
         self.block_eos = False
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+        self.tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
 
         if special_tokens is not None:
             self.tokenizer.add_tokens(special_tokens)
@@ -69,9 +69,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
 
     def load(self, path: str):
         self.model = self.model.from_pretrained(os.path.join(path, "model.bin")).eval()
-        self.tokenizer = self.tokenizer.from_pretrained(
-            os.path.join(path, "model.bin")
-        ).eval()
+        self.tokenizer = self.tokenizer.from_pretrained(os.path.join(path, "model.bin"))
         self.value_head.load_state_dict(
             torch.load(os.path.join(path, "value_head.bin"))
         )
@@ -109,15 +107,17 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         )
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
         decoder_input_ids = decoder_input_ids.to(self.get_device(), non_blocking=True)
+        history_mask = history_mask.to(self.get_device(), non_blocking=True)
         with autocast() if MIXED_PREC else suppress():
             outp = self.model(
                 input_ids,
-                attention_mask=history_mask,
+                attention_mask=history_mask if encoder_outputs is None else None,
                 decoder_input_ids=decoder_input_ids,
                 encoder_outputs=encoder_outputs,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
                 return_dict=True,
+                output_attentions=True,
             )
             logits, past_key_values, hidden_states = (
                 outp["logits"],
@@ -130,7 +130,6 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 dim=1, index=seq_last_id.expand_as(hidden_states[-1])
             )[:, 0, :]
             values = self.value_head(features.squeeze(1))
-            print("values.shape", values.shape)
             distr = Categorical(logits=logits)
 
         if self.use_cache:
@@ -176,8 +175,8 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         )
         tensor_tuple = self._append_utterance_batch(tensor_tuple, utterance_batch_list)
 
-        (input_ids, lengths, decoder_ids) = tensor_tuple
-        return input_ids, lengths, decoder_ids
+        (input_ids, lengths, decoder_ids, mask) = tensor_tuple
+        return input_ids, lengths, decoder_ids, mask
 
     def _prepare_persona_batch(self, persona_batch):
         if all(persona_batch):
@@ -214,7 +213,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 history_batch,
                 return_tensors="pt",
                 padding=True,
-                add_special_tokens=true,
+                add_special_tokens=True,
                 return_attention_mask=True,
             )
             history_batch_ids = (
@@ -282,9 +281,10 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         lengths = []
         ids_list = []
         decoder_ids_list = []
+        mask = []
         for i, tensor_tuple_row in enumerate(zip(*tensor_tuple)):
             history_token_ids, history_mask = tensor_tuple_row
-
+            mask.append(history_mask)
             if utterance_batch_list[i].nelement() != 0:
                 lengths.append(utterance_batch_list[i].shape[0])
                 ids_list.append(history_token_ids.pin_memory())
@@ -301,12 +301,8 @@ class BartPolicy(torch.nn.Module, BasePolicy):
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id,
         )
-        return (
-            input_ids,
-            lengths,
-            decoder_ids,
-            history_mask,
-        )
+        mask = pad_sequence(mask, batch_first=True, padding_value=0,)
+        return (input_ids, lengths, decoder_ids, mask)
 
     def reset_noise(self):
         pass

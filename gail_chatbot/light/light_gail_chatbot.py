@@ -18,7 +18,6 @@ from gail_chatbot.bert_adversarial_contrastive import (
     BertAdversarialContrastive,
     MIXED_PREC,
 )
-from gail_chatbot.bert_adversarial import BertAdversarial
 from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 from gym_loop.agents.pytorch_ppo import PPO
 
@@ -45,7 +44,7 @@ class LightGailChatbot(LightChatbotBase):
         # Neural nets
         self.generator = None
         self.adversarial = None
-        self.adversarial_static = None
+        # self.adversarial_static = None
 
         # Batch sizes
         self.batch_size = opt["batchsize"]  # batch size of gradient update
@@ -65,8 +64,8 @@ class LightGailChatbot(LightChatbotBase):
         self.update_generator = True
         self.update_adversarial = True
         self.add_distractors = False
-        self.distract_frac = 0.2
-        self.distract_frac_train = 0.2
+        self.distract_frac = 0.1
+        self.distract_frac_train = 0.1
         self.distract_frac_warmup = 0.5
 
         # Counters
@@ -95,7 +94,7 @@ class LightGailChatbot(LightChatbotBase):
     def _create_from_shared(self, shared: Dict[str, Any]):
         self.generator = shared["generator"]
         self.adversarial = shared["adversarial"]
-        self.adversarial = shared["adversarial_static"]
+        # self.adversarial = shared["adversarial_static"]
         self.generator_policy = self.generator.policy
 
     def _create_from_path(self, path: str):
@@ -112,7 +111,7 @@ class LightGailChatbot(LightChatbotBase):
         self.__dict__.update(overwrite_params.get("gail", {}))
         self._construct_generator(overwrite_params.get("generator_agent", {}), path)
         self._construct_adversarial(path)
-        self._construct_adversarial_static(path)
+        # self._construct_adversarial_static(path)
         self.writer = SummaryWriter(os.path.join(path, filename) + ".tensorboard")
 
     def _get_default_params(self):
@@ -177,19 +176,19 @@ class LightGailChatbot(LightChatbotBase):
             self.adversarial.to(self.device)
         self.adversarial.set_lr(self.adversarial_lr)
 
-    def _construct_adversarial_static(self, path):
-        self.adversarial_static = BertAdversarial().eval()
+    # def _construct_adversarial_static(self, path):
+    #     self.adversarial_static = BertAdversarial().eval()
 
-        adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial_static"])
-        if os.path.isfile(adv_dir):
-            self.adversarial_static.load(adv_dir)
-        else:
-            self.adversarial_static.save(adv_dir)
+    #     adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial_static"])
+    #     if os.path.isfile(adv_dir):
+    #         self.adversarial_static.load(adv_dir)
+    #     else:
+    #         self.adversarial_static.save(adv_dir)
 
-        if torch.cuda.device_count() > 1:
-            self.adversarial_static.cuda(1)
-        else:
-            self.adversarial_static.to(self.device)
+    #     if torch.cuda.device_count() > 1:
+    #         self.adversarial_static.cuda(1)
+    #     else:
+    #         self.adversarial_static.to(self.device)
 
     def share(self) -> Dict[str, Any]:
         return dict(
@@ -197,7 +196,7 @@ class LightGailChatbot(LightChatbotBase):
             **{
                 "generator": self.generator,
                 "adversarial": self.adversarial,
-                "adversarial_static": self.adversarial_static,
+                # "adversarial_static": self.adversarial_static,
             }
         )
 
@@ -212,6 +211,7 @@ class LightGailChatbot(LightChatbotBase):
                 gen_dialogs_batch = self.update_generator_(
                     dialogs_pos, dialogs_to_generate
                 )
+                # torch.cuda.empty_cache()
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print(e)
@@ -222,6 +222,7 @@ class LightGailChatbot(LightChatbotBase):
         try:
             if self.update_adversarial:
                 self.update_adversarial_(dialogs_neg, dialogs_pos, gen_dialogs_batch)
+                # torch.cuda.empty_cache()
         except RuntimeError as e:
             if "out of memory" in str(e):
                 print(e)
@@ -242,7 +243,7 @@ class LightGailChatbot(LightChatbotBase):
         return [{"id": self.id} for _ in observations]
 
     def update_generator_(self, dialogs_pos, dialogs_to_generate):
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         with torch.no_grad():
             gen_dialogs_batch = self.generate_dialog_batch(
                 dialogs_to_generate, dialogs_pos
@@ -250,7 +251,6 @@ class LightGailChatbot(LightChatbotBase):
             self.force_teacher_batch(dialogs_pos)
 
         self.generator_policy.disable_cache()
-        #         torch.cuda.empty_cache()
         if self.train_step > self.warmup_steps:
             self.distract_frac = self.distract_frac_train
             self.generator.memory.batch_size = self.gpt_update_batch_size
@@ -443,20 +443,20 @@ class LightGailChatbot(LightChatbotBase):
         return generated_dialogs_converted
 
     def compute_rewards(self, dialogs_gen, dialogs_pos):
-        loss, probs = self.adversarial.forward_contrastive(
+        loss, probs = self.adversarial.eval().forward_contrastive(
             dialogs_gen, dialogs_pos, sub_batch=self.gen_sub_batch_size, backprop=False
         )
         probs = probs.cpu().float().detach()
 
-        loss, probs_static = self.adversarial_static(
-            dialogs_gen, [], sub_batch=self.gen_sub_batch_size, backprop=False
-        )
+        # loss, probs_static = self.adversarial_static(
+        #     dialogs_gen, [], sub_batch=self.gen_sub_batch_size, backprop=False
+        # )
 
         self.metrics["gen_adv_rew"] = probs[:, 0].mean()
-        self.metrics["gen_static_rew"] = probs_static[:, 1].mean()
+        # self.metrics["gen_static_rew"] = probs_static[:, 1].mean()
 
         adequacy_scores = probs[:, 0]
-        static_adequacy_score = probs_static[:, 1]
+        # static_adequacy_score = probs_static[:, 1]
 
         self.update_stats(adequacy_scores)
         adequacy_scores = (
@@ -470,7 +470,9 @@ class LightGailChatbot(LightChatbotBase):
         #             adequacy_scores.unsqueeze(-1)
         #         ).squeeze(-1)[:probs.shape[0]]
 
-        reward_scores = adequacy_scores.cpu().detach().numpy() + static_adequacy_score.cpu().detach().numpy()
+        reward_scores = (
+            adequacy_scores.cpu().detach().numpy()
+        )  # + static_adequacy_score.cpu().detach().numpy()
 
         return reward_scores
 
@@ -491,17 +493,17 @@ class LightGailChatbot(LightChatbotBase):
             self.rew_mean = adequacy_scores_for_stats.mean()
 
     def update_adversarial_(self, dialogs_neg, dialogs_pos, gen_dialogs_batch):
-        torch.cuda.empty_cache()
+        # torch.cuda.empty_cache()
         bs = len(gen_dialogs_batch)
         disractor_frac = int(bs * self.distract_frac)
         if self.distract_frac != 0:
-            loss, probs = self.adversarial.forward_contrastive(
+            loss, probs = self.adversarial.train().forward_contrastive(
                 [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:],],
                 dialogs_pos,
                 sub_batch=self.adv_sub_batch_size,
             )
         else:
-            loss, probs = self.adversarial.forward_contrastive(
+            loss, probs = self.adversarial.train().forward_contrastive(
                 gen_dialogs_batch, dialogs_pos, sub_batch=self.adv_sub_batch_size,
             )
 
