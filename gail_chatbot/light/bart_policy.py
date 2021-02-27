@@ -102,10 +102,15 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 print(state_batch)
                 raise e
 
-        (input_ids, seqlen, decoder_input_ids, history_mask) = self._build_inputs(
-            state_batch
-        )
+        (
+            input_ids,
+            seqlen,
+            type_ids,
+            decoder_input_ids,
+            history_mask,
+        ) = self._build_inputs(state_batch)
         input_ids = input_ids.to(self.get_device(), non_blocking=True)
+        type_ids = type_ids.to(self.get_device(), non_blocking=True)
         decoder_input_ids = decoder_input_ids.to(self.get_device(), non_blocking=True)
         history_mask = history_mask.to(self.get_device(), non_blocking=True)
         with autocast() if MIXED_PREC else suppress():
@@ -113,6 +118,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 input_ids,
                 attention_mask=history_mask if encoder_outputs is None else None,
                 decoder_input_ids=decoder_input_ids,
+                token_type_ids=type_ids if encoder_outputs is None else None,
                 encoder_outputs=encoder_outputs,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
@@ -175,8 +181,8 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         )
         tensor_tuple = self._append_utterance_batch(tensor_tuple, utterance_batch_list)
 
-        (input_ids, lengths, decoder_ids, mask) = tensor_tuple
-        return input_ids, lengths, decoder_ids, mask
+        (input_ids, lengths, type_ids, decoder_ids, mask) = tensor_tuple
+        return input_ids, lengths, type_ids, decoder_ids, mask
 
     def _prepare_persona_batch(self, persona_batch):
         if all(persona_batch):
@@ -192,14 +198,16 @@ class BartPolicy(torch.nn.Module, BasePolicy):
             persona_batch_mask = (
                 persona_batch_outp["attention_mask"].bool().pin_memory()
             )
+            token_types_persona = torch.zeros_like(persona_batch_ids).pin_memory()
         else:
             persona_batch_ids = torch.empty(len(persona_batch), 0, dtype=torch.long)
             persona_batch_mask = torch.empty(len(persona_batch), 0, dtype=torch.long)
+            token_types_persona = torch.empty(len(persona_batch), 0, dtype=torch.long)
 
-        return persona_batch_ids, persona_batch_mask
+        return persona_batch_ids, persona_batch_mask, token_types_persona
 
     def _append_history_batch(self, tensor_tuple, history_batch, history_replies_num):
-        (persona_batch_ids, persona_batch_mask,) = tensor_tuple
+        (persona_batch_ids, persona_batch_mask, token_types_persona) = tensor_tuple
 
         persona_sizes = persona_batch_mask.sum(dim=1)
         if history_batch:
@@ -208,7 +216,9 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 persona[persona_batch_mask[i]]
                 for i, persona in enumerate(persona_batch_ids)
             ]
-
+            token_types_persona_list = [
+                torch.zeros_like(persona).pin_memory() for persona in persona_batch_list
+            ]
             history_batch_outp = self.tokenizer(
                 history_batch,
                 return_tensors="pt",
@@ -226,18 +236,24 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 .pin_memory()
             )
 
-            (history_token_ids, history_mask,) = self._format_history_tensors(
+            (
+                history_token_ids,
+                history_mask,
+                history_type_ids,
+            ) = self._format_history_tensors(
                 history_batch_ids,
                 history_batch_mask,
                 history_replies_num,
                 persona_batch_list,
                 persona_sizes,
+                token_types_persona_list,
             )
         else:
             history_token_ids = persona_batch_ids
             history_mask = persona_batch_mask
+            history_type_ids = token_types_persona
 
-        return history_token_ids, history_mask
+        return history_token_ids, history_mask, history_type_ids
 
     def _format_history_tensors(
         self,
@@ -246,9 +262,11 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         history_replies_num,
         persona_batch_list,
         persona_sizes,
+        token_types_persona_list,
     ):
         history_batch_ids_list = []
         history_batch_mask_list = []
+        history_batch_token_type_list = []
         num_sum = 0
         for i, num in enumerate(history_replies_num):
             history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
@@ -272,18 +290,41 @@ class BartPolicy(torch.nn.Module, BasePolicy):
             )
             history_batch_mask_list.append(torch.ones_like(history_batch_ids_list[i]))
 
+            history_types_ones = torch.ones_like(history_row_ids)
+            history_types_zeros = torch.zeros_like(history_row_ids)
+            try:
+                history_types = (
+                    torch.where(
+                        (torch.arange(0, num) % 2 == 0)
+                        .unsqueeze(-1)
+                        .expand_as(history_row_ids),
+                        history_types_ones,
+                        history_types_zeros,
+                    )
+                    .pin_memory()
+                    .view(-1)
+                )[history_row_mask]
+            except Exception as e:
+                raise e
+
+            history_batch_token_type_list.append(
+                torch.cat([token_types_persona_list[i], history_types])
+            )
+
             num_sum += num
         history_token_ids = history_batch_ids_list
         history_mask = history_batch_mask_list
-        return history_token_ids, history_mask
+        history_type_ids = history_batch_token_type_list
+        return history_token_ids, history_mask, history_type_ids
 
     def _append_utterance_batch(self, tensor_tuple, utterance_batch_list):
         lengths = []
         ids_list = []
         decoder_ids_list = []
         mask = []
+        type_ids = tensor_tuple[2]
         for i, tensor_tuple_row in enumerate(zip(*tensor_tuple)):
-            history_token_ids, history_mask = tensor_tuple_row
+            history_token_ids, history_mask, _ = tensor_tuple_row
             mask.append(history_mask)
             if utterance_batch_list[i].nelement() != 0:
                 lengths.append(utterance_batch_list[i].shape[0])
@@ -301,8 +342,9 @@ class BartPolicy(torch.nn.Module, BasePolicy):
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id,
         )
+        type_ids = pad_sequence(type_ids, batch_first=True, padding_value=0,)
         mask = pad_sequence(mask, batch_first=True, padding_value=0,)
-        return (input_ids, lengths, decoder_ids, mask)
+        return (input_ids, lengths, type_ids, decoder_ids, mask)
 
     def reset_noise(self):
         pass

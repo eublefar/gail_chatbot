@@ -88,6 +88,7 @@ class BARTSimple(torch.nn.Module):
             token_ids,
             attention_mask,
             position_ids,
+            type_ids,
             decoder_ids,
             labels,
         ) = self._build_inputs(dialogs)
@@ -107,6 +108,9 @@ class BARTSimple(torch.nn.Module):
                 positions = position_ids[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
+                type_ids_el = type_ids[lower:upper].to(
+                    self.get_device(), non_blocking=False
+                )
                 decoder_el = decoder_ids[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
@@ -119,6 +123,7 @@ class BARTSimple(torch.nn.Module):
                 outp = self.model(
                     input_ids=ids,
                     attention_mask=mask,
+                    token_type_ids=type_ids_el,
                     decoder_input_ids=decoder_el,
                     labels=labels_el,
                     output_hidden_states=True,
@@ -169,6 +174,10 @@ class BARTSimple(torch.nn.Module):
         ]
         persona_sizes = persona_batch_mask.sum(dim=1)
 
+        token_types_persona_list = [
+            torch.zeros_like(persona).pin_memory() for persona in persona_batch_list
+        ]
+
         #         print(dialogs)
         history_batch = [
             turn + self.tokenizer.sep_token for dialog in dialogs for turn in dialog[1]
@@ -192,6 +201,7 @@ class BARTSimple(torch.nn.Module):
 
         history_batch_ids_list = []
         history_batch_mask_list = []
+        history_batch_token_type_list = []
 
         labels_list = []
         decoder_ids_list = []
@@ -240,6 +250,24 @@ class BARTSimple(torch.nn.Module):
             )
             history_batch_mask_list.append(torch.ones_like(history_batch_ids_list[i]))
 
+            history_types_ones = torch.ones_like(history_row_ids)
+            history_types_zeros = torch.zeros_like(history_row_ids)
+            history_types = (
+                torch.where(
+                    (torch.arange(0, num) % 2 == 0)
+                    .unsqueeze(-1)
+                    .expand_as(history_row_ids),
+                    history_types_ones,
+                    history_types_zeros,
+                )
+                .pin_memory()
+                .view(-1)
+            )[history_row_mask]
+
+            history_batch_token_type_list.append(
+                torch.cat([token_types_persona_list[i], history_types])
+            )
+
             labels_list.append(labels)
             decoder_ids_list.append(decoder_ids)
             num_sum += num
@@ -260,10 +288,15 @@ class BARTSimple(torch.nn.Module):
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id,
         )
+
+        history_type_ids = pad_sequence(
+            history_batch_token_type_list, batch_first=True, padding_value=0.0
+        )
         return (
             history_token_ids,
             history_mask,
             history_mask.cumsum(dim=1) - 1,
+            history_type_ids,
             decoder_ids_batch,
             labels_batch,
         )

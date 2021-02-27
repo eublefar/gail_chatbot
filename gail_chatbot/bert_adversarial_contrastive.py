@@ -15,9 +15,9 @@ except ImportError as e:
 class BertAdversarialContrastive(torch.nn.Module):
     def __init__(self, lr=4e-6, mixed_precision=True):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-large")
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            "microsoft/deberta-large"
+            "microsoft/deberta-base"
         )
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-8)
         if MIXED_PREC:
