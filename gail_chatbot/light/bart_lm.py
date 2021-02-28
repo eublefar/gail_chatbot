@@ -179,9 +179,7 @@ class BARTSimple(torch.nn.Module):
         ]
 
         #         print(dialogs)
-        history_batch = [
-            turn + self.tokenizer.sep_token for dialog in dialogs for turn in dialog[1]
-        ]
+        history_batch = [turn for dialog in dialogs for turn in dialog[1]]
         history_replies_num = [len(dialog[1]) for dialog in dialogs]
         history_batch_outp = self.tokenizer(
             history_batch,
@@ -254,7 +252,7 @@ class BARTSimple(torch.nn.Module):
             history_types_zeros = torch.zeros_like(history_row_ids)
             history_types = (
                 torch.where(
-                    (torch.arange(0, num) % 2 == 0)
+                    (torch.arange(0, num - 1) % 2 == 0)
                     .unsqueeze(-1)
                     .expand_as(history_row_ids),
                     history_types_ones,
