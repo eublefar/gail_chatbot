@@ -128,7 +128,7 @@ class LightEncoderDecoderFineTune(LightChatbotBase):
             self.metrics["loss"] = loss  # pyright: reportUnboundVariable=false
             labels = labels.view([-1, 1])
             logits = logits.view([-1, logits.shape[-1]])[(labels != -100)[:, 0], :]
-            labels = labels[labels != -100]
+            labels = labels[labels != -100 or labels != self.generator.tokenizer_dec]
             entropy = Categorical(logits=logits).entropy().mean().item()
             onehot = torch.zeros_like(logits)
             onehot.scatter_(dim=1, index=labels.unsqueeze(-1), value=1)

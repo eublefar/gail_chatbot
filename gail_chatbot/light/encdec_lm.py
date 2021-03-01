@@ -22,26 +22,20 @@ class EncoderDecoderSimple(torch.nn.Module):
         self, lr=1e-5, mixed_precision=True, special_tokens=None, emote_num=23
     ):
         super().__init__()
-        self.tokenizer_enc = AutoTokenizer.from_pretrained("microsoft/deberta-base")
-        self.tokenizer_dec = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
+        self.tokenizer = AutoTokenizer.from_pretrained("allenai/longformer-base-4096")
 
-        self.tokenizer = self.tokenizer_dec
-        # self.tokenizer.add_special_tokens(
-        #     {
-        #         "pad_token": self.tokenizer.eos_token,
-        #         "sep_token": self.tokenizer.eos_token,
-        #     }
-        # )
         if special_tokens is not None:
-            self.tokenizer_enc.add_tokens(special_tokens)
+            self.tokenizer.add_tokens(special_tokens)
 
         self.model = EncoderDecoderModel.from_encoder_decoder_pretrained(
-            "microsoft/deberta-base", "microsoft/DialoGPT-medium"
+            "allenai/longformer-base-4096", "allenai/longformer-base-4096"
         ).train()
 
-        self.model.encoder.resize_token_embeddings(len(self.tokenizer_enc))
+        self.model.encoder.resize_token_embeddings(len(self.tokenizer))
 
-        self.emote_head = torch.nn.Linear(self.model.config.d_model, emote_num)
+        self.emote_head = torch.nn.Linear(
+            self.model.encoder.config.hidden_size, emote_num
+        )
 
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-10)
         self.ignore_token_id = -100
@@ -94,6 +88,7 @@ class EncoderDecoderSimple(torch.nn.Module):
             type_ids,
             decoder_ids,
             labels,
+            decoder_attention,
         ) = self._build_inputs(dialogs)
 
         loss, logits = [], []
@@ -120,6 +115,9 @@ class EncoderDecoderSimple(torch.nn.Module):
                 labels_el = labels[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
+                decoder_attention_el = decoder_attention[lower:upper].to(
+                    self.get_device(), non_blocking=False
+                )
                 emote_labels_el = emote_labels[lower:upper].to(
                     self.get_device(), non_blocking=False
                 )
@@ -130,6 +128,7 @@ class EncoderDecoderSimple(torch.nn.Module):
                     decoder_input_ids=decoder_el,
                     labels=labels_el,
                     output_hidden_states=True,
+                    decoder_attention_mask=decoder_attention_el,
                     return_dict=True,
                 )
                 emote_outp = self.emote_head(outp["encoder_hidden_states"][-1][:, 0, :])
@@ -161,7 +160,7 @@ class EncoderDecoderSimple(torch.nn.Module):
 
     def _build_inputs(self, dialogs):
         persona_batch = [dialog[0] for dialog in dialogs]
-        persona_batch_outp = self.tokenizer_enc(
+        persona_batch_outp = self.tokenizer(
             persona_batch,
             return_tensors="pt",
             padding=True,
@@ -183,12 +182,12 @@ class EncoderDecoderSimple(torch.nn.Module):
 
         #         print(dialogs)
         history_batch = [
-            turn + [self.tokenizer_enc.sep_token]
+            turn + self.tokenizer.sep_token
             for dialog in dialogs
             for turn in dialog[1][:-1]
         ]
-        history_replies_num = [len(dialog[1]) for dialog in dialogs]
-        history_batch_outp = self.tokenizer_enc(
+        history_replies_num = [len(dialog[1][:-1]) for dialog in dialogs]
+        history_batch_outp = self.tokenizer(
             history_batch,
             return_tensors="pt",
             padding=True,
@@ -201,7 +200,7 @@ class EncoderDecoderSimple(torch.nn.Module):
         history_batch_mask = history_batch_outp["attention_mask"].bool().pin_memory()
 
         utterances = [dialog[1][-1] for dialog in dialogs]
-        labels_batch = self.tokenizer_dec(
+        utt = self.tokenizer(
             utterances,
             return_tensors="pt",
             padding=True,
@@ -209,7 +208,12 @@ class EncoderDecoderSimple(torch.nn.Module):
             add_special_tokens=True,
             return_attention_mask=True,
         )
-        decoder_ids_batch = labels_batch
+        labels_batch = utt["input_ids"].pin_memory()
+        labels_batch[labels_batch == self.tokenizer.pad_token_id] = -100
+        decoder_ids_batch = shift_tokens_right(
+            labels_batch, self.tokenizer.pad_token_id, self.tokenizer.bos_token_id,
+        )
+        decoder_attention = utt["attention_mask"].pin_memory()
 
         history_batch_ids_list = []
         history_batch_mask_list = []
@@ -217,10 +221,8 @@ class EncoderDecoderSimple(torch.nn.Module):
 
         num_sum = 0
         for i, num in enumerate(history_replies_num):
-            history_row_ids = history_batch_ids[num_sum : num_sum + num - 1, :]
-            history_row_mask = history_batch_mask[num_sum : num_sum + num - 1, :].view(
-                [-1]
-            )
+            history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
+            history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view([-1])
             history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
 
             history_size = history_row_mask.sum()
@@ -229,9 +231,9 @@ class EncoderDecoderSimple(torch.nn.Module):
                 num -= 1
 
                 history_row_ids = history_batch_ids[num_sum : num_sum + num, :]
-                history_row_mask = history_batch_mask[
-                    num_sum : num_sum + num - 1, :
-                ].view([-1])
+                history_row_mask = history_batch_mask[num_sum : num_sum + num, :].view(
+                    [-1]
+                )
                 history_row_ids_flat = history_row_ids.view([-1])[history_row_mask]
 
                 history_size = history_row_mask.sum()
@@ -245,7 +247,7 @@ class EncoderDecoderSimple(torch.nn.Module):
             history_types_zeros = torch.zeros_like(history_row_ids)
             history_types = (
                 torch.where(
-                    (torch.arange(0, num - 1) % 2 == 0)
+                    (torch.arange(0, num) % 2 == 0)
                     .unsqueeze(-1)
                     .expand_as(history_row_ids),
                     history_types_ones,
@@ -264,7 +266,7 @@ class EncoderDecoderSimple(torch.nn.Module):
         history_token_ids = pad_sequence(
             history_batch_ids_list,
             batch_first=True,
-            padding_value=self.tokenizer_enc.pad_token_id,
+            padding_value=self.tokenizer.pad_token_id,
         )
         history_mask = pad_sequence(
             history_batch_mask_list, batch_first=True, padding_value=0.0
@@ -280,16 +282,24 @@ class EncoderDecoderSimple(torch.nn.Module):
             history_type_ids,
             decoder_ids_batch,
             labels_batch,
+            decoder_attention,
         )
 
     def save(self, path):
-        self.model.save_pretrained(path)
+        self.model.encoder.save_pretrained(os.path.join(path, "enc"))
+        self.model.decoder.save_pretrained(os.path.join(path, "dec"))
         torch.save(self.emote_head.state_dict(), os.path.join(path, "emote_head.bin"))
-        self.tokenizer_enc.save_pretrained(path)
+        self.tokenizer.save_pretrained(path)
 
     def load(self, path):
-        self.model = self.model.from_pretrained(path).cuda().train()
-        self.tokenizer_enc = self.tokenizer_enc.from_pretrained(path)
+        self.model = (
+            EncoderDecoderModel.from_encoder_decoder_pretrained(
+                os.path.join(path, "enc"), os.path.join(path, "dec")
+            )
+            .cuda()
+            .train()
+        )
+        self.tokenizer = self.tokenizer.from_pretrained(path)
         self.emote_head.load_state_dict(
             torch.load(os.path.join(path, "emote_head.bin"))
         )
