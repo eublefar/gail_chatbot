@@ -22,16 +22,23 @@ class EncoderDecoderSimple(torch.nn.Module):
         self, lr=1e-5, mixed_precision=True, special_tokens=None, emote_num=23
     ):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("allenai/longformer-base-4096")
+        self.tokenizer_enc = AutoTokenizer.from_pretrained(
+            "allenai/longformer-base-4096"
+        )
+        self.tokenizer_dec = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
 
+        self.tokenizer = self.tokenizer_dec
+        self.tokenizer.add_special_tokens(
+            {"pad_token": "<pad>", "sep_token": self.tokenizer.eos_token,}
+        )
         if special_tokens is not None:
-            self.tokenizer.add_tokens(special_tokens)
+            self.tokenizer_enc.add_tokens(special_tokens)
 
         self.model = EncoderDecoderModel.from_encoder_decoder_pretrained(
-            "allenai/longformer-base-4096", "allenai/longformer-base-4096"
+            "allenai/longformer-base-4096", "microsoft/DialoGPT-medium"
         ).train()
 
-        self.model.encoder.resize_token_embeddings(len(self.tokenizer))
+        self.model.encoder.resize_token_embeddings(len(self.tokenizer_enc))
 
         self.emote_head = torch.nn.Linear(
             self.model.encoder.config.hidden_size, emote_num
@@ -160,7 +167,7 @@ class EncoderDecoderSimple(torch.nn.Module):
 
     def _build_inputs(self, dialogs):
         persona_batch = [dialog[0] for dialog in dialogs]
-        persona_batch_outp = self.tokenizer(
+        persona_batch_outp = self.tokenizer_enc(
             persona_batch,
             return_tensors="pt",
             padding=True,
@@ -182,12 +189,12 @@ class EncoderDecoderSimple(torch.nn.Module):
 
         #         print(dialogs)
         history_batch = [
-            turn + self.tokenizer.sep_token
+            turn + self.tokenizer_enc.sep_token
             for dialog in dialogs
             for turn in dialog[1][:-1]
         ]
         history_replies_num = [len(dialog[1][:-1]) for dialog in dialogs]
-        history_batch_outp = self.tokenizer(
+        history_batch_outp = self.tokenizer_enc(
             history_batch,
             return_tensors="pt",
             padding=True,
@@ -200,7 +207,7 @@ class EncoderDecoderSimple(torch.nn.Module):
         history_batch_mask = history_batch_outp["attention_mask"].bool().pin_memory()
 
         utterances = [dialog[1][-1] for dialog in dialogs]
-        utt = self.tokenizer(
+        utt = self.tokenizer_dec(
             utterances,
             return_tensors="pt",
             padding=True,
@@ -209,10 +216,8 @@ class EncoderDecoderSimple(torch.nn.Module):
             return_attention_mask=True,
         )
         labels_batch = utt["input_ids"].pin_memory()
-        labels_batch[labels_batch == self.tokenizer.pad_token_id] = -100
-        decoder_ids_batch = shift_tokens_right(
-            labels_batch, self.tokenizer.pad_token_id, self.tokenizer.bos_token_id,
-        )
+        decoder_ids_batch = labels_batch.clone()
+        labels_batch[labels_batch == self.tokenizer_dec.pad_token_id] = -100
         decoder_attention = utt["attention_mask"].pin_memory()
 
         history_batch_ids_list = []
@@ -266,7 +271,7 @@ class EncoderDecoderSimple(torch.nn.Module):
         history_token_ids = pad_sequence(
             history_batch_ids_list,
             batch_first=True,
-            padding_value=self.tokenizer.pad_token_id,
+            padding_value=self.tokenizer_enc.pad_token_id,
         )
         history_mask = pad_sequence(
             history_batch_mask_list, batch_first=True, padding_value=0.0
@@ -289,7 +294,7 @@ class EncoderDecoderSimple(torch.nn.Module):
         self.model.encoder.save_pretrained(os.path.join(path, "enc"))
         self.model.decoder.save_pretrained(os.path.join(path, "dec"))
         torch.save(self.emote_head.state_dict(), os.path.join(path, "emote_head.bin"))
-        self.tokenizer.save_pretrained(path)
+        self.tokenizer_enc.save_pretrained(path)
 
     def load(self, path):
         self.model = (
@@ -299,7 +304,7 @@ class EncoderDecoderSimple(torch.nn.Module):
             .cuda()
             .train()
         )
-        self.tokenizer = self.tokenizer.from_pretrained(path)
+        self.tokenizer_enc = self.tokenizer_enc.from_pretrained(path)
         self.emote_head.load_state_dict(
             torch.load(os.path.join(path, "emote_head.bin"))
         )
