@@ -12,16 +12,39 @@ except ImportError as e:
     MIXED_PREC = False
 
 
+class ModuleWrapper(torch.nn.Module):
+    def __init__(self, module):
+        super().__init__()
+        self.module = module
+
+    def forward(
+        self, input_ids, attention_mask, token_type_ids, position_ids, dummy_arg=None
+    ):
+        assert dummy_arg is not None
+        x = self.module(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            return_dict=False,
+        )
+        return x
+
+
 class BertAdversarialContrastive(torch.nn.Module):
     def __init__(self, lr=4e-6, mixed_precision=True):
         super().__init__()
-        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
-        self.model = AutoModelForSequenceClassification.from_pretrained(
-            "microsoft/deberta-base"
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-large")
+        self.model = ModuleWrapper(
+            AutoModelForSequenceClassification.from_pretrained(
+                "microsoft/deberta-large"
+            )
         )
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-8)
         if MIXED_PREC:
             self.scaler = GradScaler()
+
+        self.dummy_tensor = torch.ones(1, dtype=torch.float32, requires_grad=True)
 
     def set_lr(self, lr):
         for param_group in self.optimizer.param_groups:
@@ -96,20 +119,37 @@ class BertAdversarialContrastive(torch.nn.Module):
                             self.get_device(), non_blocking=True
                         )
 
-                        outp_gen = self.model(
-                            input_ids=ids_gen,
-                            attention_mask=mask_gen,
-                            token_type_ids=types_gen,
-                            position_ids=positions_gen,
-                            return_dict=True,
+                        outp_gen = torch.utils.checkpoint.checkpoint(
+                            lambda *args: (
+                                self.model(
+                                    input_ids=args[0],
+                                    attention_mask=args[1],
+                                    token_type_ids=args[2],
+                                    position_ids=args[3],
+                                    dummy_arg=args[4],
+                                )
+                            ),
+                            ids_gen,
+                            mask_gen,
+                            types_gen,
+                            positions_gen,
+                            self.dummy_tensor,
                         )
-
-                        outp_pos = self.model(
-                            input_ids=ids_pos,
-                            attention_mask=mask_pos,
-                            token_type_ids=types_pos,
-                            position_ids=positions_pos,
-                            return_dict=True,
+                        outp_pos = torch.utils.checkpoint.checkpoint(
+                            lambda *args: (
+                                self.model(
+                                    input_ids=args[0],
+                                    attention_mask=args[1],
+                                    token_type_ids=args[2],
+                                    position_ids=args[3],
+                                    dummy_arg=args[4],
+                                )
+                            ),
+                            ids_pos,
+                            mask_pos,
+                            types_pos,
+                            positions_pos,
+                            self.dummy_tensor,
                         )
                         #                 print(outp_pos)
                         #                 labels = torch.stack(
@@ -121,10 +161,10 @@ class BertAdversarialContrastive(torch.nn.Module):
                         #                 ).long()
 
                         logits = torch.stack(
-                            [outp_gen["logits"][:, 1], outp_pos["logits"][:, 1]], dim=1
+                            [outp_gen[0][:, 1], outp_pos[0][:, 1]], dim=1
                         )
                         loss = torch.nn.functional.cross_entropy(
-                            logits, torch.ones_like(outp_pos["logits"][:, 1]).long()
+                            logits, torch.ones_like(outp_pos[0][:, 1]).long()
                         )
                         if backprop:
                             (self.scaler.scale(loss / iters)).backward()
