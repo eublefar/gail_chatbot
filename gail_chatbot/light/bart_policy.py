@@ -118,7 +118,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 input_ids,
                 attention_mask=history_mask if encoder_outputs is None else None,
                 decoder_input_ids=decoder_input_ids,
-                token_type_ids=type_ids if encoder_outputs is None else None,
+                # token_type_ids=type_ids if encoder_outputs is None else None,
                 encoder_outputs=encoder_outputs,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
