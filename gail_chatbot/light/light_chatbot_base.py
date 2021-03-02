@@ -51,12 +51,31 @@ class LightChatbotBase(Agent):
         self.utt_queue = []
         self.resp_queue = []
 
+        self.self_speaker_token = "<speaker_self>"
+
+        self.other_speaker_token = "<speaker_other>"
+
         self.ctx_tokens = [
             "_setting_name",
             "_setting_desc",
             "_partner_name",
             "_self_name",
             "_self_persona",
+            "_other_persona",
+        ]
+
+        self.neutral_ctx_tokens = [
+            "_setting_name",
+            "_setting_desc",
+        ]
+
+        self.self_ctx_tokens = [
+            "_self_name",
+            "_self_persona",
+        ]
+
+        self.other_ctx_tokens = [
+            "_partner_name",
             "_other_persona",
         ]
 
@@ -117,15 +136,13 @@ class LightChatbotBase(Agent):
 
         if not self.persona:
             res["text"] = self._extract_persona(observation["text"])
-            if self.filter_tokens[0] not in observation["text"]:
-                res["text"] += "\n" + self.filter_tokens[0] + ""
 
         res["text"], res["emote"] = self._extract_emote(res["text"])
 
         res["text"] = self._filter_tokens(res["text"])
 
         if self.last_label is not None:
-            self.history.append(self.last_label)
+            self.history.append(self.self_speaker_token + self.last_label)
 
         if uniform(0, 1) < self.noise_frac and not self.noise_happened:
             self.noise_happened = True
@@ -145,34 +162,37 @@ class LightChatbotBase(Agent):
 
     def _add_utterance(self, res):
         if self.utt_queue:
-            self.utt_queue.append(res["text"])
+            if res["text"] != "":
+                self.utt_queue.append(res["text"])
             self.resp_queue.append(
                 res["labels"][0] if "labels" in res else res["eval_labels"][0]
             )
 
-            self.history.append(self.utt_queue.pop(0))
+            self.history.append(self.other_speaker_token + self.utt_queue.pop(0))
 
             self.last_label = self.resp_queue.pop(0)
         else:
-            self.history.append(res["text"])
+            if res["text"] != "":
+                self.history.append(self.other_speaker_token + res["text"])
 
             self.last_label = (
                 res["labels"][0] if "labels" in res else res["eval_labels"][0]
             )
 
     def _add_unknown_question(self, res):
-        self.history.append(choice(self.questions_dataset))
+        self.history.append(self.other_speaker_token + choice(self.questions_dataset))
 
         self.last_label = choice(NO_KNOWLEDGE_PHRASES)
 
-        self.utt_queue.append(res["text"])
+        if res["text"] != "":
+            self.utt_queue.append(res["text"])
         self.resp_queue.append(
             res["labels"][0] if "labels" in res else res["eval_labels"][0]
         )
 
     def _add_out_of_context_exchange(self, res, neg_sample):
         if uniform(0, 1) < self.noise_distractor_frac:
-            self.history.append(neg_sample[1])
+            self.history.append(self.other_speaker_token + neg_sample[1])
         else:
             randstr = " ".join(
                 [
@@ -180,11 +200,12 @@ class LightChatbotBase(Agent):
                     for _ in range(randint(2, 7))
                 ]
             )
-            self.history.append(randstr)
+            self.history.append(self.other_speaker_token + randstr)
 
         self.last_label = choice(UNCERTAINTY_PHRASES)
 
-        self.utt_queue.append(res["text"])
+        if res["text"] != "":
+            self.utt_queue.append(res["text"])
         self.resp_queue.append(
             res["labels"][0] if "labels" in res else res["eval_labels"][0]
         )
@@ -198,10 +219,18 @@ class LightChatbotBase(Agent):
         )
         res["text"] = [
             (self.persona, self.history),  # Generate sample
-            (self.persona, self.history + [self.last_label]),  # Positive sample
             (
                 self.persona,
-                self.history + [neg_sample[0] if uniform(0, 1) < 0.1 else randstr],
+                self.history + [self.self_speaker_token + self.last_label],
+            ),  # Positive sample
+            (
+                self.persona,
+                self.history
+                + [
+                    self.self_speaker_token + neg_sample[0]
+                    if uniform(0, 1) < 0.1
+                    else self.self_speaker_token + randstr
+                ],
             ),  # Negative sample
         ]
         res[("labels" if "labels" in res else "eval_labels")] = [
@@ -218,7 +247,25 @@ class LightChatbotBase(Agent):
 
     def _extract_persona(self, text):
         lines = text.split("\n")
-        persona = [line for line in lines if line.split(" ")[0] in self.ctx_tokens]
+
+        persona_neutral = [
+            line for line in lines if line.split(" ")[0] in self.neutral_ctx_tokens
+        ]
+        persona_neutral[-1] += self.tokenizer.sep_token
+
+        persona_self = [
+            line for line in lines if line.split(" ")[0] in self.self_ctx_tokens
+        ]
+        persona_self[0] = self.self_speaker_token + persona_self[0]
+        persona_self[-1] += self.tokenizer.sep_token
+
+        persona_other = [
+            line for line in lines if line.split(" ")[0] in self.other_ctx_tokens
+        ]
+        persona_other[0] = self.other_speaker_token + persona_other[0]
+
+        persona = persona_neutral + persona_self + persona_other
+
         if not persona:
             raise ValueError("Tried to parse persona but none found")
         self.persona = "\n".join(persona)

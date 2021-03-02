@@ -40,14 +40,25 @@ class ValueHead(nn.Module):
 
 
 class BartPolicy(torch.nn.Module, BasePolicy):
-    def __init__(self, special_tokens=None, emote_num=23, *args, **kwargs):
+    def __init__(
+        self,
+        special_tokens=None,
+        self_speaker_token="<speaker_self>",
+        other_speaker_token="<speaker_other>",
+        emote_num=23,
+        *args,
+        **kwargs
+    ):
         torch.nn.Module.__init__(self)
         self.temp = 1
         self.block_eos = False
         self.tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
-
+        self.other_speaker_token = other_speaker_token
+        self.self_speaker_token = self_speaker_token
         if special_tokens is not None:
-            self.tokenizer.add_tokens(special_tokens)
+            self.tokenizer.add_tokens(
+                special_tokens + [other_speaker_token, self_speaker_token]
+            )
 
         self.model = BartForConditionalGeneration.from_pretrained(
             "facebook/bart-large"

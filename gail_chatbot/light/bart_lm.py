@@ -19,7 +19,13 @@ except ImportError as e:
 
 class BARTSimple(torch.nn.Module):
     def __init__(
-        self, lr=1e-5, mixed_precision=True, special_tokens=None, emote_num=23
+        self,
+        lr=1e-5,
+        mixed_precision=True,
+        special_tokens=None,
+        self_speaker_token="<speaker_self>",
+        other_speaker_token="<speaker_other>",
+        emote_num=23,
     ):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("facebook/bart-large")
@@ -29,8 +35,12 @@ class BARTSimple(torch.nn.Module):
         #         "sep_token": self.tokenizer.eos_token,
         #     }
         # )
+        self.other_speaker_token = other_speaker_token
+        self.self_speaker_token = self_speaker_token
         if special_tokens is not None:
-            self.tokenizer.add_tokens(special_tokens)
+            self.tokenizer.add_tokens(
+                special_tokens + [other_speaker_token, self_speaker_token]
+            )
 
         self.model = BartForConditionalGeneration.from_pretrained(
             "facebook/bart-large"
