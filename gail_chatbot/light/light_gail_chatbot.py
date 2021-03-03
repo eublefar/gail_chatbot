@@ -163,7 +163,9 @@ class LightGailChatbot(LightChatbotBase):
             self.generator_policy.to(self.device)
 
     def _construct_adversarial(self, path):
-        self.adversarial = BertAdversarialContrastive().train()
+        self.adversarial = BertAdversarialContrastive(
+            special_tokens=self.ctx_tokens
+        ).train()
 
         adv_dir = os.path.join(path, self.MODEL_SUBPATHS["adversarial"])
         if os.path.isfile(adv_dir):
