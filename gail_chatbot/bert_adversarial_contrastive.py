@@ -32,7 +32,14 @@ class ModuleWrapper(torch.nn.Module):
 
 
 class BertAdversarialContrastive(torch.nn.Module):
-    def __init__(self, lr=4e-6, mixed_precision=True):
+    def __init__(
+        self,
+        lr=4e-6,
+        mixed_precision=True,
+        special_tokens=None,
+        self_speaker_token="<speaker_self>",
+        other_speaker_token="<speaker_other>",
+    ):
         super().__init__()
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-large")
         self.model = ModuleWrapper(
@@ -40,6 +47,16 @@ class BertAdversarialContrastive(torch.nn.Module):
                 "microsoft/deberta-large"
             )
         )
+        self.other_speaker_token = other_speaker_token
+        self.self_speaker_token = self_speaker_token
+
+        if special_tokens is not None:
+            self.tokenizer.add_tokens(
+                special_tokens + [other_speaker_token, self_speaker_token]
+            )
+
+        self.model.module.resize_token_embeddings(len(self.tokenizer))
+
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=lr, eps=1e-8)
         if MIXED_PREC:
             self.scaler = GradScaler()

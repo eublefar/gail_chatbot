@@ -243,13 +243,13 @@ class LightChatbotBase(Agent):
         persona_neutral = [
             line for line in lines if line.split(" ")[0] in self.neutral_ctx_tokens
         ]
-        persona_neutral[-1] += self.generator.tokenizer.sep_token
+        persona_neutral[-1] += self.generator_policy.tokenizer.sep_token
 
         persona_self = [
             line for line in lines if line.split(" ")[0] in self.self_ctx_tokens
         ]
         persona_self[0] = self.self_speaker_token + persona_self[0]
-        persona_self[-1] += self.generator.tokenizer.sep_token
+        persona_self[-1] += self.generator_policy.tokenizer.sep_token
 
         persona_other = [
             line for line in lines if line.split(" ")[0] in self.other_ctx_tokens
