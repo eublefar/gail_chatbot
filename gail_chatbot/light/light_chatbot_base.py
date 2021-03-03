@@ -219,18 +219,10 @@ class LightChatbotBase(Agent):
         )
         res["text"] = [
             (self.persona, self.history),  # Generate sample
+            (self.persona, self.history + [self.last_label],),  # Positive sample
             (
                 self.persona,
-                self.history + [self.self_speaker_token + self.last_label],
-            ),  # Positive sample
-            (
-                self.persona,
-                self.history
-                + [
-                    self.self_speaker_token + neg_sample[0]
-                    if uniform(0, 1) < 0.1
-                    else self.self_speaker_token + randstr
-                ],
+                self.history + [neg_sample[0] if uniform(0, 1) < 0.1 else randstr],
             ),  # Negative sample
         ]
         res[("labels" if "labels" in res else "eval_labels")] = [
@@ -251,13 +243,13 @@ class LightChatbotBase(Agent):
         persona_neutral = [
             line for line in lines if line.split(" ")[0] in self.neutral_ctx_tokens
         ]
-        persona_neutral[-1] += self.tokenizer.sep_token
+        persona_neutral[-1] += self.generator.tokenizer.sep_token
 
         persona_self = [
             line for line in lines if line.split(" ")[0] in self.self_ctx_tokens
         ]
         persona_self[0] = self.self_speaker_token + persona_self[0]
-        persona_self[-1] += self.tokenizer.sep_token
+        persona_self[-1] += self.generator.tokenizer.sep_token
 
         persona_other = [
             line for line in lines if line.split(" ")[0] in self.other_ctx_tokens

@@ -133,7 +133,7 @@ class BARTSimple(torch.nn.Module):
                 outp = self.model(
                     input_ids=ids,
                     attention_mask=mask,
-                    token_type_ids=type_ids_el,
+                    # token_type_ids=type_ids_el,
                     decoder_input_ids=decoder_el,
                     labels=labels_el,
                     output_hidden_states=True,
