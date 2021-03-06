@@ -9,7 +9,7 @@ with open("README.rst") as readme_file:
 
 requirements = [
     "Click>=7.0",
-    "transformers==4.1.1",
+    "transformers==4.3.0",
     "tensorboardX==2.0",
     "parlai==0.1.20200716",
     "numpy==1.18.5",
@@ -34,7 +34,7 @@ setup(
         "Programming Language :: Python :: 3.8",
     ],
     description="Chatbot agent for parl.ai environments that uses generative adversarial imitation learning",
-    entry_points={"console_scripts": ["gail_chatbot=gail_chatbot.cli:main",],},
+    entry_points={"console_scripts": ["onnx-export=gail_chatbot.onnx_export:main"]},
     install_requires=requirements,
     include_package_data=True,
     keywords="gail_chatbot",

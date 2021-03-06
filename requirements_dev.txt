@@ -1,5 +1,5 @@
 pip==19.2.3
-transformers==4.1.1
+transformers==4.3.0
 tensorboardX==2.0
 parlai==1.0.0
 numpy==1.18.5

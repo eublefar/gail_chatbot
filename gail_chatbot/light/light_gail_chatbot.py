@@ -306,7 +306,7 @@ class LightGailChatbot(LightChatbotBase):
         self.generator_policy.clear_cache()
         global_step = 0
         done = np.zeros([len(dialogs)], dtype=bool)
-        dialogs = [(*dialog, torch.empty(0, dtype=torch.long,),) for dialog in dialogs]
+        dialogs = [(*dialog, torch.empty(0, dtype=torch.long)) for dialog in dialogs]
         prev_dialog = [None for dialog in dialogs]
         final_transitions = [None] * len(dialogs)
         for step in range(max_len):
@@ -314,7 +314,7 @@ class LightGailChatbot(LightChatbotBase):
             transitions = [None] * len(dialogs)
             if done.all():
                 break
-            actions = self.generator.batch_act(dialogs, done).detach()
+            actions = self.generator.batch_act(dialogs, done, step=step).detach()
             ids = self.generator_policy.decode(actions, temp=temp).detach()
             actions_cpu = actions.to("cpu", non_blocking=True)
             for i, dialog in enumerate(dialogs):
@@ -389,7 +389,7 @@ class LightGailChatbot(LightChatbotBase):
             for dialog in dialogs
         ]
         dialogs = [
-            (dialog[0], dialog[1][:-1], torch.empty(0, dtype=torch.long),)
+            (dialog[0], dialog[1][:-1], torch.empty(0, dtype=torch.long))
             for dialog in dialogs
         ]
         prev_dialog = [None for dialog in dialogs]
@@ -500,13 +500,13 @@ class LightGailChatbot(LightChatbotBase):
         disractor_frac = int(bs * self.distract_frac)
         if self.distract_frac != 0:
             loss, probs = self.adversarial.train().forward_contrastive(
-                [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:],],
+                [*gen_dialogs_batch[:-disractor_frac], *dialogs_neg[-disractor_frac:]],
                 dialogs_pos,
                 sub_batch=self.adv_sub_batch_size,
             )
         else:
             loss, probs = self.adversarial.train().forward_contrastive(
-                gen_dialogs_batch, dialogs_pos, sub_batch=self.adv_sub_batch_size,
+                gen_dialogs_batch, dialogs_pos, sub_batch=self.adv_sub_batch_size
             )
 
         self.metrics["pos_logits"] = probs[:, 1].mean()

@@ -3,10 +3,7 @@ import os
 import gc
 import numpy as np
 import torch
-from transformers import (
-    AutoTokenizer,
-    BartForConditionalGeneration,
-)
+from transformers import AutoTokenizer, BartForConditionalGeneration
 from gym_loop.policies.base_policy import BasePolicy
 from contextlib import suppress
 import torch.nn.functional as F
@@ -29,9 +26,7 @@ class ValueHead(nn.Module):
         self.linear1 = nn.Linear(1024, 512)
         self.linear2 = nn.Linear(512, 1)
 
-    def forward(
-        self, x,
-    ):
+    def forward(self, x):
         x = self.linear1(x)
         x = self.linear2(F.gelu(x))
         if torch.isnan(x).any():
@@ -46,6 +41,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         self_speaker_token="<speaker_self>",
         other_speaker_token="<speaker_other>",
         emote_num=23,
+        min_length=10,
         *args,
         **kwargs
     ):
@@ -71,6 +67,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         self.value_head = ValueHead()
         self.cache = None
         self.use_cache = True
+        self.min_length = min_length
 
     def save(self, path: str):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
@@ -95,7 +92,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
     def __call__(self, *args, **kwargs):
         return torch.nn.Module.__call__(self, *args, **kwargs)
 
-    def forward(self, state_batch: List[Tuple[str, List[str], List[str]]]):
+    def forward(self, state_batch: List[Tuple[str, List[str], List[str]]], step=None):
         if self.use_cache and self.cache:
             encoder_outputs, past_key_values = self.cache
             self.cache = None
@@ -105,7 +102,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         if past_key_values is not None:
             try:
                 state_batch = [
-                    ("", [], torch.LongTensor([state[2][-1]],)) for state in state_batch
+                    ("", [], torch.LongTensor([state[2][-1]])) for state in state_batch
                 ]
             except IndexError as e:
                 # print(self.use_cache)
@@ -147,6 +144,13 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 dim=1, index=seq_last_id.expand_as(hidden_states[-1])
             )[:, 0, :]
             values = self.value_head(features.squeeze(1))
+
+            if step is not None and step < self.min_length:
+                logits[:, self.tokenizer.eos_token_id] = float("-inf")
+            elif step is None:
+                logits[
+                    seq_last_id[:, 0, 0] < self.min_length, self.tokenizer.eos_token_id
+                ] = float("-inf")
             distr = Categorical(logits=logits)
 
         if self.use_cache:
@@ -159,10 +163,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 past_key_values,
             )
 
-        return {
-            "action_distribution": distr,
-            "values": values.squeeze(-1),
-        }
+        return {"action_distribution": distr, "values": values.squeeze(-1)}
 
     def enable_cache(self):
         self.use_cache = True
@@ -353,8 +354,8 @@ class BartPolicy(torch.nn.Module, BasePolicy):
             batch_first=True,
             padding_value=self.tokenizer.pad_token_id,
         )
-        type_ids = pad_sequence(type_ids, batch_first=True, padding_value=0,)
-        mask = pad_sequence(mask, batch_first=True, padding_value=0,)
+        type_ids = pad_sequence(type_ids, batch_first=True, padding_value=0)
+        mask = pad_sequence(mask, batch_first=True, padding_value=0)
         return (input_ids, lengths, type_ids, decoder_ids, mask)
 
     def reset_noise(self):
