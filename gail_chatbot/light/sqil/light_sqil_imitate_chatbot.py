@@ -27,12 +27,14 @@ except ImportError as e:
 torch.set_num_threads(8)
 
 
-class LightGailChatbot:
+class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
     """Chatbot that learns ConvAI task using GAIL
     """
 
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
-        super().__init__(opt, shared)
+        LightSelfplayBaseMixin.__init__(self, opt, shared)
+        LightImitateMixin.__init__(self, opt, shared)
+
         self.id = "GailChatbot"
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.MODEL_SUBPATHS = {
