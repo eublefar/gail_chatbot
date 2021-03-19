@@ -12,15 +12,29 @@ def main(args=None):
     return 0
 
 
-class BartWrapper(torch.nn.Module):
+class BartDecoderWrapper(torch.nn.Module):
     def __init__(self, model) -> None:
         super().__init__()
         self.model = model
 
-    def forward(self, input_ids, decoder_input_ids):
-        return self.model(
-            input_ids=input_ids, decoder_input_ids=decoder_input_ids, return_dict=True
-        ).logits
+    def forward(self, encoder_hidden_state, decoder_input_ids):
+        output = self.model(
+            decoder_input_ids=decoder_input_ids,
+            return_dict=True,
+            output_hidden_states=True,
+            encoder_outputs=(encoder_hidden_state, None, None),
+        )
+        return output.logits, output.encoder_last_hidden_state
+
+
+class BartEncoderWrapper(torch.nn.Module):
+    def __init__(self, model) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, input_ids):
+        output = self.model.model.encoder(input_ids=input_ids)
+        return output[0]
 
 
 @main.command()
@@ -34,25 +48,48 @@ class BartWrapper(torch.nn.Module):
     help="Path to the pretrained bart model",
     default=None,
 )
-def bart(model_path, tokenizer_path):
+@click.option(
+    "-o",
+    "--output-path",
+    type=click.STRING,
+    help="Path to the write model to",
+    default="bart.onnx",
+)
+def bart(model_path, tokenizer_path, output_path):
     bart = BartForConditionalGeneration.from_pretrained(model_path)
     tokenizer = AutoTokenizer.from_pretrained(
         tokenizer_path if tokenizer_path is not None else model_path
     )
     example_input_ids = tokenizer("Example ctx", return_tensors="pt").input_ids
     other = example_input_ids.clone()
-    bart_wrapper = BartWrapper(bart)
+    encoder_output = torch.empty([1, 0, 1024], dtype=torch.float32)
+    bart_enc_wrapper = BartEncoderWrapper(bart)
+    bart_dec_wrapper = BartDecoderWrapper(bart)
+
     onnx.export(
-        bart_wrapper,
-        (example_input_ids, other),
-        "bart.onnx",
-        input_names=["input_ids", "decoder_input_ids"],
-        output_names=["logits"],
+        bart_enc_wrapper,
+        (example_input_ids,),
+        "encoder_" + output_path,
+        input_names=["input_ids"],
+        output_names=["encoder_hidden_state_out"],
         opset_version=11,
         do_constant_folding=True,
         dynamic_axes={
             "input_ids": {1: "text_seq"},
-            "decoder_input_ids": {1: "text_seq"},
+            "encoder_hidden_state_out": {1: "text_seq"},
+        },
+    )
+    onnx.export(
+        bart_dec_wrapper,
+        (encoder_output, other),
+        "decoder_" + output_path,
+        input_names=["encoder_hidden_state", "decoder_input_ids"],
+        output_names=["logits"],
+        opset_version=11,
+        do_constant_folding=True,
+        dynamic_axes={
+            "encoder_hidden_state": {1: "enc_cahce_seq"},
+            "decoder_input_ids": {1: "text_seq_inputs"},
             "logits": {1: "logits_seq"},
         },
     )

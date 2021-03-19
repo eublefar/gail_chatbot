@@ -12,7 +12,7 @@ from tensorboardX import SummaryWriter
 from parlai.core.agents import Agent
 from parlai.core.message import Message
 
-from gail_chatbot.light.bart_lm import BARTSimple
+from gail_chatbot.light.mse.bart_lm import BARTSimple
 from gail_chatbot.light.light_chatbot_base import LightChatbotBase
 
 
