@@ -25,6 +25,9 @@ except ImportError as e:
     MIXED_PREC = False
 
 torch.set_num_threads(8)
+# TODO:
+# - Test data preparation
+# - implement SQIL training
 
 
 class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
@@ -39,6 +42,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.MODEL_SUBPATHS = {
             "generator": "generator",
+            "generator_target": "generator_target",
         }
         self.opt = opt
 
@@ -78,7 +82,6 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             self._create_from_path(opt["model_file"])
 
     def _create_from_shared(self, shared: Dict[str, Any]):
-        super()._create_from_shared(shared)
         self.generator = shared["generator"]
         self.generator_target = shared["generator_target"]
 
@@ -111,18 +114,17 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
 
     def _construct_generator(self, path: str):
         gen_dir = os.path.join(path, self.MODEL_SUBPATHS["generator"])
+        gen_target_dir = os.path.join(path, self.MODEL_SUBPATHS["generator_target"])
         if os.path.isdir(gen_dir):
             self.generator = BartPolicy(gen_dir, special_tokens=self.ctx_tokens).eval()
             self.generator_target = BartPolicy(
-                gen_dir, special_tokens=self.ctx_tokens
+                gen_target_dir, special_tokens=self.ctx_tokens
             ).eval()
         else:
-            os.mkdir(gen_dir)
-            self.generator_policy.save(gen_dir)
-        if torch.cuda.device_count() > 1:
-            self.adversarial.cuda(0)
-        else:
-            self.generator_policy.to(self.device)
+            self.generator = BartPolicy(special_tokens=self.ctx_tokens).eval()
+            self.generator_target = BartPolicy(special_tokens=self.ctx_tokens).eval()
+        self.generator_target.to(self.device)
+        self.generator.to(self.device)
 
     def share(self) -> Dict[str, Any]:
         return dict(
@@ -433,13 +435,15 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         gen_p = os.path.join(
             self.checkpoint_path, self.MODEL_SUBPATHS["generator"]
         ) + "_{}".format(0)
+        gen_target_p = os.path.join(
+            self.checkpoint_path, self.MODEL_SUBPATHS["generator_target"]
+        ) + "_{}".format(0)
         if not os.path.isdir(gen_p):
             os.mkdir(gen_p)
-        self.generator_policy.save(gen_p)
-        adv_p = os.path.join(
-            self.checkpoint_path, self.MODEL_SUBPATHS["adversarial"]
-        ) + "_{}".format(0)
-        torch.save(self.adversarial.state_dict(), adv_p)
+            os.mkdir(gen_target_p)
+        self.generator.save(gen_p)
+        self.generator_target.save(gen_target_p)
+
         with open(
             os.path.join(
                 self.dialog_dump_path, "dialogs{}.json".format(self.train_step)
@@ -457,6 +461,9 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         super().save(path=path)
         path, _ = os.path.split(path)
         gen_dir = os.path.join(path, self.MODEL_SUBPATHS["generator"])
+        gen_target_dir = os.path.join(path, self.MODEL_SUBPATHS["generator"])
         if not os.path.isdir(gen_dir):
             os.mkdir(gen_dir)
+            os.mkdir(gen_target_dir)
         self.generator.save(gen_dir)
+        self.generator_target.save(gen_target_p)

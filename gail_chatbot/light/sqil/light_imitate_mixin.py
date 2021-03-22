@@ -47,10 +47,12 @@ class LightImitateMixin(Agent):
                     self.history_dict.get(observation["id"], []),
                 )
             )
-            imitate.extend(observation["text"])
+            imitate.extend(
+                [dialog for dialog in observation["text"] if len(dialog[1]) > 0]
+            )
             ids.append(observation["id"])
 
-        utterances = self.batch_imitate(imitate)
+        self.batch_imitate(imitate)
 
         utterances = self.batch_sample(sample)
         self._update_histories(ids, utterances)
@@ -70,6 +72,7 @@ class LightImitateMixin(Agent):
         self._update_histories(ids, utterances, other=True)
 
         self.batch_update()
+        return [{"id": self.id} for _ in observations]
 
     def batch_imitate(self, dialogs):
         """Implement sampling utterances and memorization here"""

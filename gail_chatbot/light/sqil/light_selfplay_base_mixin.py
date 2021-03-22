@@ -133,11 +133,11 @@ class LightSelfplayBaseMixin(Agent):
                     self.persona_2_name,
                     self.persona_2_desc,
                 ),
-                self.history + [self.last_label],
+                self.history + [self.self_speaker_token + self.last_label],
             ),
         ]
-        if len(self.history) > 0:
-            res["text"] += (
+        res["text"].append(
+            (
                 self._construct_persona(
                     self.persona_neutral,
                     self.persona_2_name,
@@ -147,7 +147,7 @@ class LightSelfplayBaseMixin(Agent):
                 ),
                 self._convert_history_to_other(self.history),
             )
-        res["text"] = res["text"][::-1]
+        )
         return res
 
     def _add_utterance(self, res):
@@ -218,14 +218,18 @@ class LightSelfplayBaseMixin(Agent):
             + self.generator_policy.tokenizer.sep_token
             + "\n"
             + self.self_speaker_token
+            + self.self_ctx_tokens[0]
             + persona_self_name
             + "\n"
+            + self.self_ctx_tokens[1]
             + persona_self_desc
             + self.generator_policy.tokenizer.sep_token
             + "\n"
             + self.other_speaker_token
+            + self.other_ctx_tokens[0]
             + persona_other_name
             + "\n"
+            + self.other_ctx_tokens[1]
             + persona_other_desc
         )
 
