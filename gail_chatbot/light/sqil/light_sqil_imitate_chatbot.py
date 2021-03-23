@@ -316,7 +316,9 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             state = samples["obs"]
             next_state = samples["next_obs"]
             action = torch.stack(samples["acts"]).to(self.device, non_blocking=True)
-            rewards = torch.stack(samples["rews"]).to(self.device, non_blocking=True)
+            rewards = torch.FloatTensor(samples["rews"]).to(
+                self.device, non_blocking=True
+            )
             with torch.no_grad():
                 next_q = self.generator_target(next_state)
                 next_v = self.generator_target.getV(next_q)
