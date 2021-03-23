@@ -63,7 +63,6 @@ class LightImitateMixin(Agent):
 
         utterances = self.batch_sample(sample)
         self._update_histories(utterances, other=True)
-        self.batch_update()
         if (
             self.train_step % self.episode_num_dialog_dump == 0
         ) and self.train_step != 0:

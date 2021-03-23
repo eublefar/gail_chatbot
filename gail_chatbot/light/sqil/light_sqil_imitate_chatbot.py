@@ -60,9 +60,6 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         # Batch sizes
         self.batch_size = opt["batchsize"]  # batch size of gradient update
 
-        self.replay_buffer_expert = ReplayBuffer(8000000, self.batch_size)
-        self.replay_buffer_sample = ReplayBuffer(8000000, self.batch_size)
-
         # Hyperparameters
         self.maxlen = 120
         self.episode_num_log = 1
@@ -105,6 +102,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self.generator = shared["generator"]
         self.generator_target = shared["generator_target"]
         self.optimizer = shared["optimizer"]
+        self.replay_buffer_sample = shared["replay_buffer_sample"]
+        self.replay_buffer_expert = shared["replay_buffer_expert"]
         self.overwrite_params = shared["overwrite_params"]
         self.__dict__ = {
             k: v if k not in self.overwrite_params else self.overwrite_params[k]
@@ -128,6 +127,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             for k, v in self.__dict__.items()
         }
         self.overwrite_params = overwrite_params
+        self.replay_buffer_expert = ReplayBuffer(10000000, self.batch_size)
+        self.replay_buffer_sample = ReplayBuffer(10000000, self.batch_size)
 
     def _get_default_params(self):
         return {
@@ -173,6 +174,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 "generator_target": self.generator_target,
                 "optimizer": self.optimizer,
                 "overwrite_params": self.overwrite_params,
+                "replay_buffer_expert": self.replay_buffer_expert,
+                "replay_buffer_sample": self.replay_buffer_sample,
             }
         )
 
@@ -264,58 +267,57 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         total_q = 0
         self.generator.disable_cache()
         self.generator_target.disable_cache()
-        for _ in range(self.updates_per_step):
-            samples_expert = self.replay_buffer_expert.sample_batch()
-            samples_policy = self.replay_buffer_sample.sample_batch()
-            run = True  # to start first run
-            sub_batch_size = self.update_batch_size // 2
-            while run:
-                run = False
-                exc = False
-                try:
-                    iters = len(samples_expert["data"]) // sub_batch_size + int(
-                        (len(samples_expert["data"]) % sub_batch_size) != 0
+        samples_expert = self.replay_buffer_expert.sample_batch()
+        samples_policy = self.replay_buffer_sample.sample_batch()
+        run = True  # to start first run
+        sub_batch_size = self.update_batch_size // 2
+        while run:
+            run = False
+            exc = False
+            try:
+                iters = len(samples_expert["obs"]) // sub_batch_size + int(
+                    (len(samples_expert["obs"]) % sub_batch_size) != 0
+                )
+                for i in range(iters):
+                    upper = (i + 1) * sub_batch_size
+                    lower = i * sub_batch_size
+
+                    loss, q = self._compute_loss(
+                        {
+                            sample_key: [
+                                *sample[lower:upper],
+                                *samples_policy[sample_key][lower:upper],
+                            ]
+                            for sample_key, sample in samples_expert.items()
+                        },
+                        iters,
                     )
-                    for i in range(iters):
-                        upper = (i + 1) * sub_batch_size
-                        lower = i * sub_batch_size
+                    if MIXED_PREC:
+                        self.scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+                    total_loss += loss.detach().cpu().item()
+                    total_q += q.detach().cpu().item()
+                    del loss, q
+            except RuntimeError as e:
+                print("reducing update batch_size")
+                exc = True
+                if "loss" in locals():
+                    del loss
 
-                        loss, q = self._compute_loss(
-                            {
-                                sample_key: [
-                                    *sample[lower:upper],
-                                    *samples_policy[sample_key][lower:upper],
-                                ]
-                                for sample_key, sample in samples_expert.items()
-                            },
-                            iters,
-                        )
-                        if MIXED_PREC:
-                            self.scaler.scale(loss).backward()
-                        else:
-                            loss.backward()
-                        total_loss += loss.detach().cpu().item()
-                        total_q += q.detach().cpu().item()
-                        del loss, q
-                except RuntimeError as e:
-                    print("reducing update batch_size")
-                    exc = True
-                    if "loss" in locals():
-                        del loss
+            if exc:
+                run = True
+                if "loss" in locals():
+                    del loss
+                torch.cuda.synchronize()
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
 
-                if exc:
-                    run = True
-                    if "loss" in locals():
-                        del loss
-                    torch.cuda.synchronize()
-                    self.optimizer.zero_grad()
-                    torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
 
-                    torch.cuda.synchronize()
-                    self.optimizer.zero_grad()
-                    torch.cuda.empty_cache()
-
-                    sub_batch_size = sub_batch_size // 2
+                sub_batch_size = sub_batch_size // 2
 
             if MIXED_PREC:
                 self.scaler.unscale_(self.optimizer)
@@ -327,15 +329,12 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             else:
                 self.optimizer.step()
             self.optimizer.zero_grad()
-        self.writer.add_scalar(
-            "Loss", total_loss / self.updates_per_step, global_step=self.train_step
-        )
-        self.writer.add_scalar(
-            "Q value", total_q / self.updates_per_step, global_step=self.train_step
-        )
+        self.writer.add_scalar("Loss", total_loss, global_step=self.train_step)
+        self.writer.add_scalar("Q value", total_q, global_step=self.train_step)
         self.writer.add_scalar(
             "Entropy", self.generator.get_entropy(), global_step=self.train_step
         )
+        self.generator.enable_cache()
 
     def _compute_loss(self, samples, norm_term):
         with autocast() if MIXED_PREC else suppress():
@@ -392,6 +391,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 self.replay_buffer_sample.store(
                     prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
                 )
+            self.batch_update()
         self.generator.clear_cache()
         return [d[2] for d in dialogs]
 

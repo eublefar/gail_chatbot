@@ -167,7 +167,6 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         self.use_cache = True
 
     def disable_cache(self):
-        self.clear_cache()
         self.use_cache = False
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], torch.Tensor]]):

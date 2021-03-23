@@ -16,7 +16,6 @@ class ReplayBuffer:
         self.acts_buf = np.zeros([size], dtype=np.object)
         self.rews_buf = np.zeros([size], dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
-        self.data = [{} for _ in range(size)]
         self.max_size, self.batch_size = size, batch_size
         self.ptr, self.size, = 0, 0
         self.gamma = gamma
@@ -28,16 +27,14 @@ class ReplayBuffer:
         rew: float,
         next_obs: np.ndarray,
         done: bool,
-        data: dict = {},
     ) -> Tuple[np.ndarray, np.ndarray, float, np.ndarray, bool]:
-        transition = (obs, act, rew, next_obs, done, data)
+        transition = (obs, act, rew, next_obs, done)
 
         self.obs_buf[self.ptr] = obs
         self.next_obs_buf[self.ptr] = next_obs
         self.acts_buf[self.ptr] = act
         self.rews_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
-        self.data[self.ptr] = data
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
 
@@ -51,7 +48,6 @@ class ReplayBuffer:
             acts=self.acts_buf[idxs],
             rews=self.rews_buf[idxs],
             done=self.done_buf[idxs],
-            data=[self.data[idx] for idx in idxs],
             # for N-step Learning
             indices=idxs,
         )
@@ -70,7 +66,6 @@ class ReplayBuffer:
                 acts=self.acts_buf[idxs],
                 rews=self.rews_buf[idxs],
                 done=self.done_buf[idxs],
-                data=[self.data[idx] for idx in idxs],
                 # for N-step Learning
                 indices=idxs,
             )
@@ -94,6 +89,5 @@ class ReplayBuffer:
         self.acts_buf = np.zeros([self.max_size], dtype=np.object)
         self.rews_buf = np.zeros([self.max_size], dtype=np.float32)
         self.done_buf = np.zeros(self.max_size, dtype=np.float32)
-        self.data = [{} for _ in range(self.max_size)]
         gc.collect()
         self.ptr, self.size, = 0, 0
