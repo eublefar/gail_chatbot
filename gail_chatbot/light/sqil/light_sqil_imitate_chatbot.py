@@ -54,6 +54,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self.optimizer = None
         self.update_batch_size = 8
         self.gen_sub_batch_size = 8
+        self.update_step = 0
+        self.total_step = 0
         if MIXED_PREC:
             self.scaler = GradScaler(enabled=True)
 
@@ -76,6 +78,9 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self.gradient_clip_norm = 40
         self.min_replay_size = 15000
         self.lr = 1e-5
+        self.update_steps = 10
+        self.update_batch_size = 32
+        self.update_subbatch_size = 32
         # Counters
         self.gen_episode_num = 0
         self.no_update_step = 0
@@ -127,14 +132,14 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             for k, v in self.__dict__.items()
         }
         self.overwrite_params = overwrite_params
-        self.replay_buffer_expert = ReplayBuffer(10000000, self.batch_size)
-        self.replay_buffer_sample = ReplayBuffer(10000000, self.batch_size)
+        self.replay_buffer_expert = ReplayBuffer(10000000, self.update_batch_size)
+        self.replay_buffer_sample = ReplayBuffer(10000000, self.update_batch_size)
 
     def _get_default_params(self):
         return {
             "maxlen": 120,
             "gen_sub_batch_size": 32,
-            "update_batch_size": 16,
+            "update_batch_size": 32,
             "episode_num_log": 1,
             "episode_num_dialog_dump": 100,
             "episode_checkpoint_num": 200,
@@ -257,8 +262,9 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             self.replay_buffer_expert.size < self.min_replay_size
             or self.replay_buffer_sample.size < self.min_replay_size
         ):
-            print("Not enough data, skipping update")
+            # print("Not enough data, skipping update")
             return None
+        self.update_step += 1
         self.no_update_step = +1
         if self.no_update_step > 1000:
             self.no_update_step = 0
@@ -270,7 +276,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         samples_expert = self.replay_buffer_expert.sample_batch()
         samples_policy = self.replay_buffer_sample.sample_batch()
         run = True  # to start first run
-        sub_batch_size = self.update_batch_size // 2
+        sub_batch_size = self.update_subbatch_size // 2
         while run:
             run = False
             exc = False
@@ -319,20 +325,20 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
 
                 sub_batch_size = sub_batch_size // 2
 
-            if MIXED_PREC:
-                self.scaler.unscale_(self.optimizer)
-            clip_grad_norm_(self.generator.parameters(), self.gradient_clip_norm)
+        if MIXED_PREC:
+            self.scaler.unscale_(self.optimizer)
+        clip_grad_norm_(self.generator.parameters(), self.gradient_clip_norm)
 
-            if MIXED_PREC:
-                self.scaler.step(self.optimizer)
-                self.scaler.update()
-            else:
-                self.optimizer.step()
-            self.optimizer.zero_grad()
-        self.writer.add_scalar("Loss", total_loss, global_step=self.train_step)
-        self.writer.add_scalar("Q value", total_q, global_step=self.train_step)
+        if MIXED_PREC:
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            self.optimizer.step()
+        self.optimizer.zero_grad()
+        self.writer.add_scalar("Loss", total_loss, global_step=self.update_step)
+        self.writer.add_scalar("Q value", total_q, global_step=self.update_step)
         self.writer.add_scalar(
-            "Entropy", self.generator.get_entropy(), global_step=self.train_step
+            "Entropy", self.generator.get_entropy(), global_step=self.update_step
         )
         self.generator.enable_cache()
 
@@ -369,6 +375,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         dialogs = [(*dialog, torch.empty(0, dtype=torch.long)) for dialog in dialogs]
         prev_dialog = [None for dialog in dialogs]
         for step in range(max_len):
+            self.total_step += 1
             if done.all():
                 break
             actions = self.generator.choose_action(dialogs)
@@ -391,7 +398,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 self.replay_buffer_sample.store(
                     prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
                 )
-            self.batch_update()
+            if self.total_step % self.update_steps == 0:
+                self.batch_update()
         self.generator.clear_cache()
         return [d[2] for d in dialogs]
 
