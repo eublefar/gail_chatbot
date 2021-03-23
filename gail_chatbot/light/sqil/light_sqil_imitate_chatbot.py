@@ -137,9 +137,10 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         pass
 
     def batch_sample(self, dialogs):
-        # print("batch_sample", dialogs)
-        # self.pp.pprint(self.histories)
-        return ["test" for dialog in dialogs]
+        self.gen_episode_num += 1
+        return [
+            "test" if self.gen_episode_num % 2 == 0 else "no test" for dialog in dialogs
+        ]
 
     def batch_update(self):
         pass
@@ -179,4 +180,4 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             os.mkdir(gen_dir)
             os.mkdir(gen_target_dir)
         self.generator.save(gen_dir)
-        self.generator_target.save(gen_target_p)
+        self.generator_target.save(gen_target_dir)
