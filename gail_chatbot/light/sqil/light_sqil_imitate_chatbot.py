@@ -237,6 +237,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             self.no_update_step = 0
             self.generator_target.load_state_dict(self.generator.state_dict())
         total_loss = 0
+        total_q = 0
         self.generator.disable_cache()
         self.generator_target.disable_cache()
         for _ in range(self.updates_per_step):
@@ -255,7 +256,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                         upper = (i + 1) * sub_batch_size
                         lower = i * sub_batch_size
 
-                        loss = self._compute_loss(
+                        loss, q = self._compute_loss(
                             {
                                 sample_key: [
                                     *sample[lower:upper],
@@ -270,7 +271,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                         else:
                             loss.backward()
                         total_loss += loss.detach().cpu().item()
-                        del loss
+                        total_q += q.detach().cpu().item()
+                        del loss, q
                 except RuntimeError as e:
                     print("cuda in error: ", "CUDA" in str(e))
                     print("reducing batch_size")
@@ -303,6 +305,11 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 self.optimizer.step()
             self.optimizer.zero_grad()
         self.writer.add_scalar("Loss", total_loss / self.updates_per_step)
+        self.writer.add_scalar("Q value", total_q / self.updates_per_step)
+        if (
+            self.train_step % self.episode_num_dialog_dump == 0
+        ) and self.train_step != 0:
+            self.checkpoint(gen_dialogs_batch)
 
     def _compute_loss(self, samples, norm_term):
         with autocast() if MIXED_PREC else suppress():
@@ -318,9 +325,11 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 next_q = self.generator_target(next_state)
                 next_v = self.generator_target.getV(next_q)
                 y = rewards + self.gamma * next_v
-            loss = F.mse_loss(self.generator(state).gather(1, action.long()), y)
+            q = self.generator(state).gather(1, action.long())
+            loss = F.mse_loss(q, y)
+            q = q.mean() / norm_term
             loss /= norm_term
-        return loss
+        return loss, q
 
     def generate_dialogs(
         self, dialogs: Iterable[Tuple[str, List[str]]], max_len: int = 32

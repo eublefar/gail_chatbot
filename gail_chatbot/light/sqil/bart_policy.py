@@ -135,7 +135,6 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 ),
                 past_key_values,
             )
-        print(q.shape)
         return q
 
     def getV(self, q_value):
