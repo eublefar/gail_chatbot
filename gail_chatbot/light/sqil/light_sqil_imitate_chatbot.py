@@ -211,19 +211,41 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
 
     def batch_sample(self, dialogs_to_generate):
         self.generator.enable_cache()
-        gen_dialogs_batch = []
-        for i in range(
-            (self.batch_size // self.gen_sub_batch_size)
-            + int((self.batch_size % self.gen_sub_batch_size) > 0)
-        ):
-            upper = (i + 1) * self.gen_sub_batch_size
-            lower = i * self.gen_sub_batch_size
-            generated_dialogs = self.generate_dialogs(
-                dialogs_to_generate[lower:upper], max_len=self.maxlen,
-            )
-            generated_dialogs = self.decode_reply(generated_dialogs)
-            gen_dialogs_batch.extend(generated_dialogs)
+        run = True  # to start first run
+        sub_batch_size = self.gen_sub_batch_size
 
+        while run:
+            run = False
+            exc = False
+            gen_dialogs_batch = []
+            try:
+                for i in range(
+                    (self.batch_size // sub_batch_size)
+                    + int((self.batch_size % sub_batch_size) > 0)
+                ):
+                    upper = (i + 1) * sub_batch_size
+                    lower = i * sub_batch_size
+                    generated_dialogs = self.generate_dialogs(
+                        dialogs_to_generate[lower:upper], max_len=self.maxlen,
+                    )
+                    generated_dialogs = self.decode_reply(generated_dialogs)
+                    gen_dialogs_batch.extend(generated_dialogs)
+            except RuntimeError as e:
+                print("reducing sample batch_size")
+                exc = True
+
+            if exc:
+                self.generator.clear_cache()
+                run = True
+                torch.cuda.synchronize()
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
+
+                torch.cuda.synchronize()
+                self.optimizer.zero_grad()
+                torch.cuda.empty_cache()
+
+                sub_batch_size = sub_batch_size // 2
         return gen_dialogs_batch
 
     def batch_update(self):
@@ -231,6 +253,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             self.replay_buffer_expert.size < self.min_replay_size
             or self.replay_buffer_sample.size < self.min_replay_size
         ):
+            print("Not enough data, skipping update")
             return None
         self.no_update_step = +1
         if self.no_update_step > 1000:
@@ -274,8 +297,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                         total_q += q.detach().cpu().item()
                         del loss, q
                 except RuntimeError as e:
-                    print("cuda in error: ", "CUDA" in str(e))
-                    print("reducing batch_size")
+                    print("reducing update batch_size")
                     exc = True
                     if "loss" in locals():
                         del loss
