@@ -1,16 +1,11 @@
-from typing import List, Tuple, Dict, Union
+from typing import List, Tuple
 import os
-import gc
-import numpy as np
 import torch
 from transformers import AutoTokenizer, BartForConditionalGeneration
 from gym_loop.policies.base_policy import BasePolicy
 from contextlib import suppress
-import torch.nn.functional as F
 from torch.distributions import Categorical
 from torch.nn.utils.rnn import pad_sequence
-from torch import nn
-import math
 
 try:
     from torch.cuda.amp import autocast
@@ -18,20 +13,6 @@ try:
     MIXED_PREC = True
 except ImportError as e:
     MIXED_PREC = False
-
-
-class ValueHead(nn.Module):
-    def __init__(self):
-        super(ValueHead, self).__init__()
-        self.linear1 = nn.Linear(1024, 512)
-        self.linear2 = nn.Linear(512, 1)
-
-    def forward(self, x):
-        x = self.linear1(x)
-        x = self.linear2(F.gelu(x))
-        if torch.isnan(x).any():
-            print("NaN advantage")
-        return x
 
 
 class BartPolicy(torch.nn.Module, BasePolicy):
@@ -43,6 +24,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         other_speaker_token="<speaker_other>",
         emote_num=23,
         min_length=10,
+        alpha=1,
         *args,
         **kwargs
     ):
@@ -51,9 +33,9 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         self.block_eos = False
         self.other_speaker_token = other_speaker_token
         self.self_speaker_token = self_speaker_token
+        self.alpha = alpha
 
         self.emote_head = torch.nn.Linear(1024, emote_num)
-        self.value_head = ValueHead()
         if path is not None:
             self.load(path)
         else:
@@ -96,7 +78,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
     def __call__(self, *args, **kwargs):
         return torch.nn.Module.__call__(self, *args, **kwargs)
 
-    def forward(self, state_batch: List[Tuple[str, List[str], List[str]]], step=None):
+    def forward(self, state_batch: List[Tuple[str, List[str], List[int]]], step=None):
         if self.use_cache and self.cache:
             encoder_outputs, past_key_values = self.cache
             self.cache = None
@@ -130,7 +112,6 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 input_ids,
                 attention_mask=history_mask if encoder_outputs is None else None,
                 decoder_input_ids=decoder_input_ids,
-                # token_type_ids=type_ids if encoder_outputs is None else None,
                 encoder_outputs=encoder_outputs,
                 past_key_values=past_key_values,
                 output_hidden_states=True,
@@ -143,19 +124,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 outp["decoder_hidden_states"],
             )
             seq_last_id = (torch.LongTensor(seqlen) - 1).view([-1, 1, 1]).cuda()
-            logits = logits.gather(dim=1, index=seq_last_id.expand_as(logits))[:, 0, :]
-            features = hidden_states[-1].gather(
-                dim=1, index=seq_last_id.expand_as(hidden_states[-1])
-            )[:, 0, :]
-            values = self.value_head(features.squeeze(1))
-
-            if step is not None and step < self.min_length:
-                logits[:, self.tokenizer.eos_token_id] = float("-inf")
-            elif step is None:
-                logits[
-                    seq_last_id[:, 0, 0] < self.min_length, self.tokenizer.eos_token_id
-                ] = float("-inf")
-            distr = Categorical(logits=logits)
+            q = logits.gather(dim=1, index=seq_last_id.expand_as(logits))[:, 0, :]
 
         if self.use_cache:
             self.cache = (
@@ -166,8 +135,23 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 ),
                 past_key_values,
             )
+        return q
 
-        return {"action_distribution": distr, "values": values.squeeze(-1)}
+    def getV(self, q_value):
+        v = self.alpha * torch.log(
+            torch.sum(torch.exp(q_value / self.alpha), dim=1, keepdim=True)
+        )
+        return v
+
+    def choose_action(self, state):
+        with torch.no_grad():
+            q = self.forward(state)
+            v = self.getV(q).squeeze()
+            dist = torch.exp((q - v) / self.alpha)
+            dist = dist / torch.sum(dist)
+            c = Categorical(dist)
+            a = c.sample()
+        return a.item()
 
     def enable_cache(self):
         self.use_cache = True
@@ -175,9 +159,6 @@ class BartPolicy(torch.nn.Module, BasePolicy):
     def disable_cache(self):
         self.clear_cache()
         self.use_cache = False
-
-    def decode(self, hidden_states, topk=50, temp=None):
-        return hidden_states.to("cpu")
 
     def _build_inputs(self, state_batch: List[Tuple[str, List[str], torch.Tensor]]):
 

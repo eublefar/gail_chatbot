@@ -18,6 +18,7 @@ class LightImitateMixin(Agent):
 
     def __init__(self, opt: Dict[str, Any], shared: Dict[str, Any] = None):
         self.id = "LightChatbotSelfPlay"
+        self.train_step = 0
         self.self_speaker_token = "<speaker_self>"
 
         self.other_speaker_token = "<speaker_other>"
@@ -29,6 +30,7 @@ class LightImitateMixin(Agent):
         raise NotImplementedError()
 
     def batch_act(self, observations):
+        self.train_step += 1
         # Add generated histories to data ones
         imitate = []
         sample = []

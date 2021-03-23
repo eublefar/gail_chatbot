@@ -11,8 +11,9 @@ requirements = [
     "Click>=7.0",
     "transformers==4.3.0",
     "tensorboardX==2.0",
-    "parlai==0.1.20200716",
-    "numpy==1.18.5",
+    "parlai",
+    "numpy",
+    "cpprb==10.1.0",
 ]
 
 setup_requirements = []
