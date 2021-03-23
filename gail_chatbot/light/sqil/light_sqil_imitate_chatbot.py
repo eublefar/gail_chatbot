@@ -315,12 +315,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         with autocast() if MIXED_PREC else suppress():
             state = samples["obs"]
             next_state = samples["next_obs"]
-            action = torch.stack(samples["acts"].tolist()).to(
-                self.device, non_blocking=True
-            )
-            rewards = torch.stack(samples["rews"].tolist()).to(
-                self.device, non_blocking=True
-            )
+            action = torch.stack(samples["acts"]).to(self.device, non_blocking=True)
+            rewards = torch.stack(samples["rews"]).to(self.device, non_blocking=True)
             with torch.no_grad():
                 next_q = self.generator_target(next_state)
                 next_v = self.generator_target.getV(next_q)
