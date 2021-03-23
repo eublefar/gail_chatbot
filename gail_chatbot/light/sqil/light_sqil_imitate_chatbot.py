@@ -210,6 +210,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 )
 
     def batch_sample(self, dialogs_to_generate):
+        self.generator.enable_cache()
         gen_dialogs_batch = []
         for i in range(
             (self.batch_size // self.gen_sub_batch_size)
@@ -236,6 +237,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             self.no_update_step = 0
             self.generator_target.load_state_dict(self.generator.state_dict())
         total_loss = 0
+        self.generator.disable_cache()
+        self.generator_target.disable_cache()
         for _ in range(self.updates_per_step):
             samples_expert = self.replay_buffer_expert.sample_batch()
             samples_policy = self.replay_buffer_sample.sample_batch()
@@ -342,14 +345,14 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 else:
                     dialogs[i] = (*dialog[:-1], ids[i].unsqueeze(-1))
 
-                if ids[i] == self.generator_policy.tokenizer.eos_token_id or (
+                if ids[i] == self.generator.tokenizer.eos_token_id or (
                     step == (max_len - 1)
                 ):
                     done[i] = True
                 self.replay_buffer_sample.store(
                     prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
                 )
-        self.generator_policy.clear_cache()
+        self.generator.clear_cache()
         return [d[2] for d in dialogs]
 
     def decode_reply(self, generated_dialogs):

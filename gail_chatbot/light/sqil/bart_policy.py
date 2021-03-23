@@ -135,6 +135,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
                 ),
                 past_key_values,
             )
+        print(q.shape)
         return q
 
     def getV(self, q_value):
@@ -146,12 +147,12 @@ class BartPolicy(torch.nn.Module, BasePolicy):
     def choose_action(self, state):
         with torch.no_grad():
             q = self.forward(state)
-            v = self.getV(q).squeeze()
+            v = self.getV(q)
             dist = torch.exp((q - v) / self.alpha)
             dist = dist / torch.sum(dist)
             c = Categorical(dist)
             a = c.sample()
-        return a.item()
+        return a
 
     def enable_cache(self):
         self.use_cache = True
