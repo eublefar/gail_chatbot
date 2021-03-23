@@ -75,6 +75,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self.updates_per_step = 15
         self.gradient_clip_norm = 40
         self.min_replay_size = 15000
+        self.lr = 1e-5
         # Counters
         self.gen_episode_num = 0
         self.no_update_step = 0
@@ -145,6 +146,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             "updates_per_step": 15,
             "gradient_clip_norm": 40,
             "min_replay_size": 15000,
+            "lr": 1e-5,
         }
 
     def _construct_generator(self, path: str):
