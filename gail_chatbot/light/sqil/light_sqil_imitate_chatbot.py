@@ -60,6 +60,9 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         # Batch sizes
         self.batch_size = opt["batchsize"]  # batch size of gradient update
 
+        self.replay_buffer_expert = ReplayBuffer(5000000, self.batch_size)
+        self.replay_buffer_sample = ReplayBuffer(5000000, self.batch_size)
+
         # Hyperparameters
         self.maxlen = 120
         self.episode_num_log = 1
@@ -125,8 +128,6 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             for k, v in self.__dict__.items()
         }
         self.overwrite_params = overwrite_params
-        self.replay_buffer_expert = ReplayBuffer(5000000, self.update_batch_size)
-        self.replay_buffer_sample = ReplayBuffer(5000000, self.update_batch_size)
 
     def _get_default_params(self):
         return {
