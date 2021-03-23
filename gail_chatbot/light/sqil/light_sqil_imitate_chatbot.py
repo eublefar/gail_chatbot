@@ -327,9 +327,15 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             else:
                 self.optimizer.step()
             self.optimizer.zero_grad()
-        self.writer.add_scalar("Loss", total_loss / self.updates_per_step)
-        self.writer.add_scalar("Q value", total_q / self.updates_per_step)
-        self.writer.add_scalar("Entropy", self.generator.get_entropy())
+        self.writer.add_scalar(
+            "Loss", total_loss / self.updates_per_step, global_step=self.train_step
+        )
+        self.writer.add_scalar(
+            "Q value", total_q / self.updates_per_step, global_step=self.train_step
+        )
+        self.writer.add_scalar(
+            "Entropy", self.generator.get_entropy(), global_step=self.train_step
+        )
 
     def _compute_loss(self, samples, norm_term):
         with autocast() if MIXED_PREC else suppress():
