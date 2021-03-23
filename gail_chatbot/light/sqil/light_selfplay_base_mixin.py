@@ -101,14 +101,13 @@ class LightSelfplayBaseMixin(Agent):
         self.emotes = [em.strip() for em in self.emotes]
 
     def observe(self, observation: Message):
-
         if "text" not in observation:
             self.reset()
             return observation
 
         res = dict(observation)
 
-        if not self.persona_neutral:
+        if self.persona_neutral is None:
             res["text"] = self._extract_persona(observation["text"])
 
         res["text"], res["emote"] = self._extract_emote(res["text"])
@@ -119,10 +118,6 @@ class LightSelfplayBaseMixin(Agent):
             self.history.append(self.self_speaker_token + self.last_label)
 
         self._add_utterance(res)
-
-        self.episode_done = observation["episode_done"]
-        if self.episode_done:
-            self.reset()
 
         res["text"] = [
             (
@@ -148,6 +143,9 @@ class LightSelfplayBaseMixin(Agent):
                 self._convert_history_to_other(self.history),
             )
         )
+        self.episode_done = observation["episode_done"]
+        if self.episode_done:
+            self.reset()
         return res
 
     def _add_utterance(self, res):
@@ -198,8 +196,16 @@ class LightSelfplayBaseMixin(Agent):
             if line.split(" ")[0] in self.other_ctx_tokens[1]
         ][0]
 
-        if not self.persona_neutral:
-            raise ValueError("Tried to parse persona but none found")
+        if self.persona_neutral is None:
+            raise ValueError("Tried to parse persona but persona_neutral not found")
+        if self.persona_1_name is None:
+            raise ValueError("Tried to parse persona but persona_1_name not found")
+        if self.persona_1_desc is None:
+            raise ValueError("Tried to parse persona but persona_1_desc not found")
+        if self.persona_2_name is None:
+            raise ValueError("Tried to parse persona but persona_2_name not found")
+        if self.persona_2_desc is None:
+            raise ValueError("Tried to parse persona but persona_2_desc not found")
 
         return "\n".join(
             [line for line in lines if line.split(" ")[0] not in self.ctx_tokens]
@@ -215,7 +221,7 @@ class LightSelfplayBaseMixin(Agent):
     ):
         return (
             persona_neutral
-            + self.generator_policy.tokenizer.sep_token
+            + self.generator.tokenizer.sep_token
             + "\n"
             + self.self_speaker_token
             + self.self_ctx_tokens[0]
@@ -223,7 +229,7 @@ class LightSelfplayBaseMixin(Agent):
             + "\n"
             + self.self_ctx_tokens[1]
             + persona_self_desc
-            + self.generator_policy.tokenizer.sep_token
+            + self.generator.tokenizer.sep_token
             + "\n"
             + self.other_speaker_token
             + self.other_ctx_tokens[0]
@@ -269,32 +275,6 @@ class LightSelfplayBaseMixin(Agent):
     def act(self):
         raise NotImplementedError()
 
-    def batch_act(self, observations):
-        # Add generated histories to data ones
-        imitate_first = []
-        sample_first = []
-        imitate_second = []
-        sample_second = []
-        for observation in observations:
-            len(observation["text"])
-        utterances = self.batch_sample(imitate_first, sample_first)
-        self._update_histories(utterances)
-        utterances = self.batch_sample(imitate_second, sample_second)
-        self._update_histories(utterances)
-        self.batch_update()
-        # Update generated histories with generated utterances
-
-    def batch_sample(self, imitate, sample) -> Dict[int, str]:
-        """Implement sampling utterances and memorizing """
-        pass
-
-    def batch_update(self):
-        """Implement update here"""
-        pass
-
-    def _update_histories(self, utterances):
-        pass
-
     def reset(self):
         super().reset()
         self.history = []
@@ -304,5 +284,3 @@ class LightSelfplayBaseMixin(Agent):
         self.persona_2 = None
         self.resp_queue = []
         self.utt_queue = []
-        self.noise_happened = False
-        self.unknown_happened = False

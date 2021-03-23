@@ -52,7 +52,7 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         self.other_speaker_token = other_speaker_token
         self.self_speaker_token = self_speaker_token
 
-        self.emote_head = torch.nn.Linear(self.model.config.d_model, emote_num)
+        self.emote_head = torch.nn.Linear(1024, emote_num)
         self.value_head = ValueHead()
         if path is not None:
             self.load(path)

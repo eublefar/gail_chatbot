@@ -22,8 +22,8 @@ class LightImitateMixin(Agent):
 
         self.other_speaker_token = "<speaker_other>"
 
-        self.persona_dict = {}
-        self.history_dict = {}
+        self.personas = [None] * opt["batchsize"]
+        self.histories = [None] * opt["batchsize"]
 
     def act(self):
         raise NotImplementedError()
@@ -33,44 +33,37 @@ class LightImitateMixin(Agent):
         imitate = []
         sample = []
         ids = []
-        for observation in observations:
+        for i, observation in enumerate(observations):
             if (
-                observation["id"] not in self.persona_dict
-                or self.persona_dict[observation["id"]] != observation["text"][0][0]
+                self.personas[i] is None
+                or self.personas[i] != observation["text"][0][0]
             ):
-                self.persona_dict[observation["id"]] = observation["text"][0][0]
-                self.history_dict[observation["id"]] = []
+                self.personas[i] = observation["text"][0][0]
+                self.histories[i] = []
 
-            sample.append(
-                (
-                    self.persona_dict.get(observation["id"], observation["text"][0][0]),
-                    self.history_dict.get(observation["id"], []),
-                )
-            )
+            sample.append((self.personas[i], self.histories[i],))
             imitate.extend(
                 [dialog for dialog in observation["text"] if len(dialog[1]) > 0]
             )
-            ids.append(observation["id"])
 
         self.batch_imitate(imitate)
 
         utterances = self.batch_sample(sample)
-        self._update_histories(ids, utterances)
+        self._update_histories(utterances)
+        print(self.histories)
 
         sample = []
-        for observation in observations:
+        for i, observation in enumerate(observations):
             sample.append(
                 (
                     observation["text"][1][0],
-                    self._convert_history_to_other(
-                        self.history_dict.get(observation["id"], [])
-                    ),
+                    self._convert_history_to_other(self.histories[i]),
                 )
             )
 
         utterances = self.batch_sample(sample)
-        self._update_histories(ids, utterances, other=True)
-
+        self._update_histories(utterances, other=True)
+        print("upd2", self.histories)
         self.batch_update()
         return [{"id": self.id} for _ in observations]
 
@@ -86,15 +79,14 @@ class LightImitateMixin(Agent):
         """Update weights here"""
         pass
 
-    def _update_histories(self, ids, utterances, other=False):
-        for i, id in enumerate(ids):
-            history = self.history_dict.get(id, [])
+    def _update_histories(self, utterances, other=False):
+        for i in range(len(utterances)):
+            history = self.histories[i]
             history.append(
-                self.self_speaker_token
-                if not other
-                else self.other_speaker_token + utterances[i]
+                (self.self_speaker_token if not other else self.other_speaker_token)
+                + utterances[i]
             )
-            self.history_dict[id] = history
+            self.histories[i] = history
 
     def _convert_history_to_other(self, history):
         history = [
