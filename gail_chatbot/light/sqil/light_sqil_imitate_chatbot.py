@@ -60,8 +60,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         # Batch sizes
         self.batch_size = opt["batchsize"]  # batch size of gradient update
 
-        self.replay_buffer_expert = ReplayBuffer(5000000, self.batch_size)
-        self.replay_buffer_sample = ReplayBuffer(5000000, self.batch_size)
+        self.replay_buffer_expert = ReplayBuffer(8000000, self.batch_size)
+        self.replay_buffer_sample = ReplayBuffer(8000000, self.batch_size)
 
         # Hyperparameters
         self.maxlen = 120
