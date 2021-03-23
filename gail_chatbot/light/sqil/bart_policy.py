@@ -52,6 +52,8 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         self.cache = None
         self.use_cache = True
         self.min_length = min_length
+        self.avg_entropy = 0
+        self.cnt = 0
 
     def save(self, path: str):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
@@ -150,8 +152,16 @@ class BartPolicy(torch.nn.Module, BasePolicy):
             dist = torch.exp((q - v) / self.alpha)
             dist = dist / torch.sum(dist)
             c = Categorical(dist)
+            self.avg_entropy += c.entropy().detach().cpu().mean().item()
+            self.cnt += 1
             a = c.sample()
         return a
+
+    def get_entropy(self):
+        avg = self.avg_entropy / self.cnt
+        self.avg_entropy = 0
+        self.cnt = 0
+        return avg
 
     def enable_cache(self):
         self.use_cache = True

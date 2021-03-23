@@ -34,7 +34,6 @@ class LightImitateMixin(Agent):
         # Add generated histories to data ones
         imitate = []
         sample = []
-        ids = []
         for i, observation in enumerate(observations):
             if (
                 self.personas[i] is None
@@ -67,6 +66,10 @@ class LightImitateMixin(Agent):
         self._update_histories(utterances, other=True)
         print("upd2", self.histories)
         self.batch_update()
+        if (
+            self.train_step % self.episode_num_dialog_dump == 0
+        ) and self.train_step != 0:
+            self.checkpoint(sample)
         return [{"id": self.id} for _ in observations]
 
     def batch_imitate(self, dialogs):

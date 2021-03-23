@@ -306,24 +306,28 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             self.optimizer.zero_grad()
         self.writer.add_scalar("Loss", total_loss / self.updates_per_step)
         self.writer.add_scalar("Q value", total_q / self.updates_per_step)
-        if (
-            self.train_step % self.episode_num_dialog_dump == 0
-        ) and self.train_step != 0:
-            self.checkpoint(gen_dialogs_batch)
+        self.writer.add_scalar("Entropy", self.generator.get_entropy())
 
     def _compute_loss(self, samples, norm_term):
         with autocast() if MIXED_PREC else suppress():
             state = samples["obs"]
             next_state = samples["next_obs"]
-            action = torch.stack(samples["acts"]).to(self.device, non_blocking=True)
-            rewards = torch.FloatTensor(samples["rews"]).to(
-                self.device, non_blocking=True
+            action = (
+                torch.stack(samples["acts"])
+                .to(self.device, non_blocking=True)
+                .view([-1, 1])
+            )
+            rewards = (
+                torch.FloatTensor(samples["rews"])
+                .to(self.device, non_blocking=True)
+                .view([-1, 1])
             )
             with torch.no_grad():
                 next_q = self.generator_target(next_state)
                 next_v = self.generator_target.getV(next_q)
                 y = rewards + self.gamma * next_v
-            q = self.generator(state).gather(1, action.long())
+            q = self.generator(state)
+            q = q.gather(1, action.long())
             loss = F.mse_loss(q, y)
             q = q.mean() / norm_term
             loss /= norm_term
