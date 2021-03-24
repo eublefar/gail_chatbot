@@ -245,7 +245,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             except RuntimeError as e:
                 print("reducing sample batch_size")
                 traceback.print_exc()
-                print("dialogs_to_generate")
+                print(dialogs_to_generate)
                 exc = True
 
             if exc:
@@ -364,6 +364,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
     def _compute_loss(self, samples, norm_term):
         with autocast() if MIXED_PREC else suppress():
             state = samples["obs"]
+
+            print(state)
             next_state = samples["next_obs"]
             action = (
                 torch.stack(samples["acts"])
@@ -417,7 +419,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 self.replay_buffer_sample.store(
                     prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
                 )
-            self.batch_update()
+            if self.total_step % self.updates_per_step == 0:
+                self.batch_update()
         self.generator.clear_cache()
         return [d[2] for d in dialogs]
 
