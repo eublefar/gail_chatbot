@@ -59,16 +59,12 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         self.model.save_pretrained(os.path.join(path, "model.bin"))
         self.tokenizer.save_pretrained(os.path.join(path, "model.bin"))
         torch.save(self.emote_head.state_dict(), os.path.join(path, "emote_head.bin"))
-        torch.save(self.value_head.state_dict(), os.path.join(path, "value_head.bin"))
 
     def load(self, path: str):
         self.model = BartForConditionalGeneration.from_pretrained(
             os.path.join(path, "model.bin")
         ).eval()
         self.tokenizer = AutoTokenizer.from_pretrained(os.path.join(path, "model.bin"))
-        self.value_head.load_state_dict(
-            torch.load(os.path.join(path, "value_head.bin"))
-        )
         self.emote_head.load_state_dict(
             torch.load(os.path.join(path, "emote_head.bin"))
         )
@@ -158,10 +154,13 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         return a
 
     def get_entropy(self):
-        avg = self.avg_entropy / self.cnt
-        self.avg_entropy = 0
-        self.cnt = 0
-        return avg
+        if self.cnt > 0:
+            avg = self.avg_entropy / self.cnt
+            self.avg_entropy = 0
+            self.cnt = 0
+            return avg
+        else:
+            return -1
 
     def enable_cache(self):
         self.use_cache = True

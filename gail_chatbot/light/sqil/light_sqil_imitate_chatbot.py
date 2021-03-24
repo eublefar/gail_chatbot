@@ -8,6 +8,7 @@ import json
 import yaml
 import json
 import pprint
+import traceback
 
 from tensorboardX import SummaryWriter
 from copy import deepcopy
@@ -138,20 +139,21 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
     def _get_default_params(self):
         return {
             "maxlen": 120,
-            "gen_sub_batch_size": 32,
-            "update_batch_size": 32,
+            "gen_sub_batch_size": 8,
+            "update_batch_size": 128,
+            "update_subbatch_size": 2,
             "episode_num_log": 1,
-            "episode_num_dialog_dump": 100,
-            "episode_checkpoint_num": 200,
+            "episode_num_dialog_dump": 20,
+            "episode_checkpoint_num": 20,
             "update_generator": True,
-            "gamma": 0.99,
+            "gamma": 0.9,
             "alpha": 1,
             "alpha_log_decay": 0.5,
             "min_alpha": 0.01,
             "imitate_reward": 1,
-            "target_update_steps": 1000,
+            "target_update_steps": 200,
             "updates_per_step": 15,
-            "gradient_clip_norm": 40,
+            "gradient_clip_norm": 20,
             "min_replay_size": 15000,
             "lr": 1e-5,
         }
@@ -193,7 +195,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             )
             for dialog in dialogs
         ]
-        max_len = max([action.shape[0] for action in actions])
+        max_len = min(512, max([action.shape[0] for action in actions]))
         dialogs = [
             (dialog[0], dialog[1][:-1], torch.empty(0, dtype=torch.long))
             for dialog in dialogs
@@ -220,6 +222,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
 
     def batch_sample(self, dialogs_to_generate):
         self.generator.enable_cache()
+        self.generator.clear_cache()
         run = True  # to start first run
         sub_batch_size = self.gen_sub_batch_size
 
@@ -241,6 +244,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                     gen_dialogs_batch.extend(generated_dialogs)
             except RuntimeError as e:
                 print("reducing sample batch_size")
+                traceback.print_exc()
+                print("dialogs_to_generate")
                 exc = True
 
             if exc:
@@ -255,6 +260,9 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 torch.cuda.empty_cache()
 
                 sub_batch_size = sub_batch_size // 2
+                if sub_batch_size == 0:
+                    print("Skipping sampling step")
+                    return ["" for di in dialogs_to_generate]
         return gen_dialogs_batch
 
     def batch_update(self):
@@ -265,18 +273,25 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             # print("Not enough data, skipping update")
             return None
         self.update_step += 1
-        self.no_update_step = +1
-        if self.no_update_step > 1000:
-            self.no_update_step = 0
-            self.generator_target.load_state_dict(self.generator.state_dict())
+        for target_param, local_param in zip(
+            self.generator_target.parameters(), self.generator.parameters()
+        ):
+            target_param.data.copy_(
+                (1 / self.target_update_steps) * local_param.data
+                + (1.0 - 1 / self.target_update_steps) * target_param.data
+            )
         total_loss = 0
         total_q = 0
         self.generator.disable_cache()
         self.generator_target.disable_cache()
         samples_expert = self.replay_buffer_expert.sample_batch()
         samples_policy = self.replay_buffer_sample.sample_batch()
+        samples = {
+            sample_key: [*sample, *samples_policy[sample_key],]
+            for sample_key, sample in samples_expert.items()
+        }
         run = True  # to start first run
-        sub_batch_size = self.update_subbatch_size // 2
+        sub_batch_size = self.update_subbatch_size
         while run:
             run = False
             exc = False
@@ -290,11 +305,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
 
                     loss, q = self._compute_loss(
                         {
-                            sample_key: [
-                                *sample[lower:upper],
-                                *samples_policy[sample_key][lower:upper],
-                            ]
-                            for sample_key, sample in samples_expert.items()
+                            sample_key: sample[lower:upper]
+                            for sample_key, sample in samples.items()
                         },
                         iters,
                     )
@@ -307,6 +319,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                     del loss, q
             except RuntimeError as e:
                 print("reducing update batch_size")
+                traceback.print_exc()
                 exc = True
                 if "loss" in locals():
                     del loss
@@ -315,15 +328,21 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 run = True
                 if "loss" in locals():
                     del loss
-                torch.cuda.synchronize()
-                self.optimizer.zero_grad()
-                torch.cuda.empty_cache()
+                try:
+                    torch.cuda.synchronize()
+                    self.optimizer.zero_grad()
+                    torch.cuda.empty_cache()
 
-                torch.cuda.synchronize()
-                self.optimizer.zero_grad()
-                torch.cuda.empty_cache()
-
+                    torch.cuda.synchronize()
+                    self.optimizer.zero_grad()
+                    torch.cuda.empty_cache()
+                except Exception as e:
+                    continue
                 sub_batch_size = sub_batch_size // 2
+                if sub_batch_size == 0:
+                    print("Skipping update step")
+                    self.generator.enable_cache()
+                    return None
 
         if MIXED_PREC:
             self.scaler.unscale_(self.optimizer)
@@ -337,9 +356,9 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self.optimizer.zero_grad()
         self.writer.add_scalar("Loss", total_loss, global_step=self.update_step)
         self.writer.add_scalar("Q value", total_q, global_step=self.update_step)
-        self.writer.add_scalar(
-            "Entropy", self.generator.get_entropy(), global_step=self.update_step
-        )
+        entropy = self.generator.get_entropy()
+        if entropy > 0:
+            self.writer.add_scalar("Entropy", entropy, global_step=self.update_step)
         self.generator.enable_cache()
 
     def _compute_loss(self, samples, norm_term):
@@ -398,8 +417,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 self.replay_buffer_sample.store(
                     prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
                 )
-            if self.total_step % self.update_steps == 0:
-                self.batch_update()
+            self.batch_update()
         self.generator.clear_cache()
         return [d[2] for d in dialogs]
 
