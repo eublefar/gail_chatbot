@@ -186,7 +186,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             }
         )
 
-    def batch_imitate(self, dialogs):
+    def batch_imitate(self, dialogs, dialogs_next):
         done = np.zeros([len(dialogs)], dtype=bool)
         actions = [
             torch.LongTensor(
@@ -212,13 +212,21 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                 dialogs[i] = (*dialog[:-1], new_utterance)
                 if step == (len(actions[i]) - 1):
                     done[i] = True
-                self.replay_buffer_expert.store(
-                    prev_dialog[i],
-                    actions[i][step],
-                    self.imitate_reward,
-                    deepcopy(dialogs[i]),
-                    False,
-                )
+                    self.replay_buffer_expert.store(
+                        prev_dialog[i],
+                        actions[i][step],
+                        self.imitate_reward,
+                        dialogs_next[i],
+                        False,
+                    )
+                else:
+                    self.replay_buffer_expert.store(
+                        prev_dialog[i],
+                        actions[i][step],
+                        self.imitate_reward,
+                        deepcopy(dialogs[i]),
+                        False,
+                    )
 
     def batch_sample(self, dialogs_to_generate):
         self.generator.enable_cache()
@@ -364,8 +372,6 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
     def _compute_loss(self, samples, norm_term):
         with autocast() if MIXED_PREC else suppress():
             state = samples["obs"]
-
-            print(state)
             next_state = samples["next_obs"]
             action = (
                 torch.stack(samples["acts"])

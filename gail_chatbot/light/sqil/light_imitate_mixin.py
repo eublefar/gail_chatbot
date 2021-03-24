@@ -26,6 +26,8 @@ class LightImitateMixin(Agent):
         self.personas = [None] * opt["batchsize"]
         self.histories = [None] * opt["batchsize"]
 
+        self.last_imitate = None
+
     def act(self):
         raise NotImplementedError()
 
@@ -44,10 +46,26 @@ class LightImitateMixin(Agent):
 
             sample.append((self.personas[i], self.histories[i],))
             imitate.extend(
-                [dialog for dialog in observation["text"] if len(dialog[1]) > 0]
+                [
+                    dialog if len(dialog[1]) > 0 else None
+                    for dialog in observation["text"]
+                ]
+            )
+        if self.last_imitate is not None:
+            self.batch_imitate(
+                [
+                    self.last_imitate[i]
+                    for i, dialog in enumerate(imitate)
+                    if dialog is not None and self.last_imitate[i] is not None
+                ],
+                [
+                    (dialog[0], dialog[1][:-1])
+                    for i, dialog in enumerate(imitate)
+                    if dialog is not None and self.last_imitate[i] is not None
+                ],
             )
 
-        self.batch_imitate(imitate)
+        self.last_imitate = imitate
 
         utterances = self.batch_sample(sample)
         self._update_histories(utterances)
