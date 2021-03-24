@@ -200,6 +200,10 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             (dialog[0], dialog[1][:-1], torch.empty(0, dtype=torch.long))
             for dialog in dialogs
         ]
+        dialogs_next = [
+            (dialog[0], dialog[1][:-1], torch.empty(0, dtype=torch.long))
+            for dialog in dialogs_next
+        ]
         prev_dialog = [None for dialog in dialogs]
         for step in range(max_len):
             if done.all():
@@ -422,9 +426,10 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                     step == (max_len - 1)
                 ):
                     done[i] = True
-                self.replay_buffer_sample.store(
-                    prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
-                )
+                else:
+                    self.replay_buffer_sample.store(
+                        prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
+                    )
             if self.total_step % self.updates_per_step == 0:
                 self.batch_update()
         self.generator.clear_cache()
