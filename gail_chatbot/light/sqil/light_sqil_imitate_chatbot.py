@@ -95,6 +95,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self.lr_updated = False
         self.metrics = {}
         self.is_eval = False
+        self.dialogs_cache = {}
 
         if not os.path.isdir(self.dialog_dump_path):
             os.mkdir(self.dialog_dump_path)
@@ -402,9 +403,11 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         self, dialogs: Iterable[Tuple[str, List[str]]], max_len: int = 32
     ):
         self.generator.clear_cache()
+
         done = np.zeros([len(dialogs)], dtype=bool)
         dialogs = [(*dialog, torch.empty(0, dtype=torch.long)) for dialog in dialogs]
         prev_dialog = [None for dialog in dialogs]
+
         for step in range(max_len):
             self.total_step += 1
             if done.all():
@@ -426,6 +429,18 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                     step == (max_len - 1)
                 ):
                     done[i] = True
+                    if dialogs[i][0] in self.dialogs_cache:
+                        self.dialogs_cache[dialogs[i][0]]["cnt"] = 0
+                        transition = self.dialogs_cache[dialogs[i][0]]["transition"]
+                        transition[3] = (
+                            *dialogs[i][:-1],
+                            torch.empty(0, dtype=torch.long),
+                        )
+                        self.replay_buffer_sample.store(transition)
+                    self.dialogs_cache[dialogs[i][0]] = {
+                        "cnt": 0,
+                        "transition": [prev_dialog[i], ids[i], 0, None, False,],
+                    }
                 else:
                     self.replay_buffer_sample.store(
                         prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
@@ -433,6 +448,16 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             if self.total_step % self.updates_per_step == 0:
                 self.batch_update()
         self.generator.clear_cache()
+
+        del_keys = []
+        for key, cached_dict in self.dialogs_cache.items():
+            cached_dict["cnt"] += 1
+            if cached_dict["cnt"] >= 10:
+                del_keys.append(key)
+
+        for key in del_keys:
+            del self.dialogs_cache[key]
+
         return [d[2] for d in dialogs]
 
     def decode_reply(self, generated_dialogs):

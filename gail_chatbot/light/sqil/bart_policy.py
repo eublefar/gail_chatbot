@@ -331,24 +331,17 @@ class BartPolicy(torch.nn.Module, BasePolicy):
         for i, tensor_tuple_row in enumerate(zip(*tensor_tuple)):
             history_token_ids, history_mask, _ = tensor_tuple_row
             mask.append(history_mask)
-            if utterance_batch_list[i].nelement() != 0:
-                lengths.append(utterance_batch_list[i].shape[0] + 1)
-                ids_list.append(history_token_ids.pin_memory())
-                decoder_ids_list.append(
-                    torch.cat(
-                        [
-                            torch.LongTensor([self.tokenizer.eos_token_id]).to(
-                                self.get_device()
-                            ),
-                            utterance_batch_list[i].pin_memory(),
-                        ],
-                        dim=0,
-                    )
+            lengths.append(utterance_batch_list[i].shape[0] + 1)
+            ids_list.append(history_token_ids.pin_memory())
+            decoder_ids_list.append(
+                torch.cat(
+                    [
+                        torch.LongTensor([self.tokenizer.eos_token_id]),
+                        utterance_batch_list[i].pin_memory(),
+                    ],
+                    dim=0,
                 )
-            else:
-                lengths.append(1)
-                decoder_ids_list.append()
-                ids_list.append(history_token_ids.pin_memory())
+            )
         input_ids = pad_sequence(
             ids_list, batch_first=True, padding_value=self.tokenizer.pad_token_id
         )
