@@ -140,7 +140,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
         return {
             "maxlen": 120,
             "gen_sub_batch_size": 8,
-            "update_batch_size": 128,
+            "update_batch_size": 32,
             "update_subbatch_size": 2,
             "episode_num_log": 1,
             "episode_num_dialog_dump": 20,
