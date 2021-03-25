@@ -436,11 +436,15 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
                             *dialogs[i][:-1],
                             torch.empty(0, dtype=torch.long),
                         )
-                        self.replay_buffer_sample.store(transition)
-                    self.dialogs_cache[dialogs[i][0]] = {
-                        "cnt": 0,
-                        "transition": [prev_dialog[i], ids[i], 0, None, False,],
-                    }
+                        self.replay_buffer_sample.store(*transition)
+                    if ids[i] == self.generator.tokenizer.eos_token_id:
+                        self.dialogs_cache[dialogs[i][0]] = {
+                            "cnt": 0,
+                            "transition": [prev_dialog[i], ids[i], 0, None, False,],
+                        }
+                    else:
+                        if dialogs[i][0] in self.dialogs_cache:
+                            del self.dialogs_cache[dialogs[i][0]]
                 else:
                     self.replay_buffer_sample.store(
                         prev_dialog[i], ids[i], 0, deepcopy(dialogs[i]), False,
@@ -463,6 +467,8 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
     def decode_reply(self, generated_dialogs):
         return [
             self.generator.tokenizer.decode(generated, skip_special_tokens=True)
+            .replace(self.self_speaker_token, "")
+            .replace(self.other_speaker_token, "")
             for generated in generated_dialogs
         ]
 
