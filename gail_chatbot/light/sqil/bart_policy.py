@@ -143,10 +143,14 @@ class BartPolicy(torch.nn.Module, BasePolicy):
 
     def choose_action(self, state):
         with torch.no_grad():
+            mask = torch.BoolTensor([state_el[2].numel() < 3 for state_el in state]).to(
+                self.get_device()
+            )
             q = self.forward(state)
             v = self.getV(q)
             dist = torch.exp((q - v) / self.alpha)
-            dist = dist / torch.sum(dist)
+            dist /= torch.sum(dist)
+            dist[mask, self.tokenizer.eos_token_id] = 0
             c = Categorical(dist)
             self.avg_entropy += c.entropy().detach().cpu().mean().item()
             self.cnt += 1
