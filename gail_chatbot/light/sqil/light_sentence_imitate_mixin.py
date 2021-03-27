@@ -34,14 +34,14 @@ class LightImitateMixin(Agent):
         for i, observation in enumerate(observations):
             sample.extend(
                 [
-                    (dialog[0, dialog[1][:-1]]) if len(dialog[1]) > 0 else None
-                    for dialog in observation["text"]
+                    (dialog[0], dialog[1][:-1]) 
+                    for dialog in observation["text"] if len(dialog[1]) > 0
                 ]
             )
             imitate.extend(
                 [
-                    dialog if len(dialog[1]) > 0 else None
-                    for dialog in observation["text"]
+                    dialog 
+                    for dialog in observation["text"] if len(dialog[1]) > 0 
                 ]
             )
         self.batch_imitate(imitate)

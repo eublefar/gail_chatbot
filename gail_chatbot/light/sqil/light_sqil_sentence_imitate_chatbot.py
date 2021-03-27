@@ -14,7 +14,7 @@ from tensorboardX import SummaryWriter
 from copy import deepcopy
 from contextlib import suppress
 
-from gail_chatbot.light.sqil.bart_sac_policy import BartPolicy
+from gail_chatbot.light.sqil.bart_policy import BartPolicy
 from gail_chatbot.light.sqil.light_sentence_imitate_mixin import LightImitateMixin
 from gail_chatbot.light.sqil.light_selfplay_base_mixin import LightSelfplayBaseMixin
 from .replay_buffer import ReplayBuffer
@@ -384,7 +384,7 @@ class LightGailChatbot(LightSelfplayBaseMixin, LightImitateMixin):
             with torch.no_grad():
                 next_q = self.generator_target(next_state)
                 next_v = self.generator_target.getV(next_q)
-                y = rewards + done * self.gamma * next_v
+                y = rewards + ~done * self.gamma * next_v
             q = self.generator(state)
             q = q.gather(1, action.long())
             loss = F.mse_loss(q, y)
